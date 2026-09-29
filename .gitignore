@@ -1,0 +1,28 @@
+# Build artifacts
+/figma-cli
+/figma-cli.exe
+/dist/
+*.exe
+*.dll
+*.dylib
+*.test
+
+# Go
+/vendor/
+
+# Credentials / runtime (defense-in-depth — path asli ada di ~/.figma-cli, bukan di repo ini)
+accounts.json
+config.json
+mcp-auth/
+daemon.sock
+daemon.pid
+daemon.log
+*.pen
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
