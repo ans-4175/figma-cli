@@ -56,6 +56,26 @@ func TestFigmaAPIRetriesTransientAndFailsFastOn403(t *testing.T) {
 	}
 }
 
+func TestDiscoveryJSONRetriesTransient503(t *testing.T) {
+	prevBase := restRetryBackoff
+	defer func() { restRetryBackoff = prevBase }()
+	restRetryBackoff = time.Millisecond
+	attempts := 0
+	srv := testOAuthServer(t, func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(503)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	})
+	status, _, body, err := httpGetJSON(srv.URL, nil)
+	if err != nil || status != 200 || attempts != 2 || !json.Valid(body) {
+		t.Fatalf("discovery retry failed: status=%d attempts=%d err=%v", status, attempts, err)
+	}
+}
+
 func TestMCPRetriesReadsNeverWrites(t *testing.T) {
 	prevBase := mcpRetryBackoff
 	defer func() { mcpRetryBackoff = prevBase }()

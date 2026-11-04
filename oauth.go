@@ -202,24 +202,39 @@ type authServerMeta struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 }
 
+// httpGetJSON fetches discovery/metadata documents. Transient 502/503/504
+// are retried bounded so a provider-side overload window (seen live on
+// 2026-11-04) does not abort the whole login flow.
 func httpGetJSON(rawURL string, hdrs map[string]string) (int, http.Header, []byte, error) {
 	if err := validateOAuthEndpoint(rawURL); err != nil {
 		return 0, nil, nil, err
 	}
-	req, err := http.NewRequest("GET", rawURL, nil)
-	if err != nil {
-		return 0, nil, nil, err
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequest("GET", rawURL, nil)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		for k, v := range hdrs {
+			req.Header.Set(k, v)
+		}
+		resp, err := oauthHTTPClient.Do(req)
+		if err != nil {
+			if attempt < 2 {
+				time.Sleep(retryDelay(attempt, 0))
+				continue
+			}
+			return 0, nil, nil, err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			if attempt < 2 {
+				time.Sleep(retryDelay(attempt, parseRetryAfter(resp.Header.Get("Retry-After"))))
+				continue
+			}
+		}
+		return resp.StatusCode, resp.Header, body, nil
 	}
-	for k, v := range hdrs {
-		req.Header.Set(k, v)
-	}
-	resp, err := oauthHTTPClient.Do(req)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	return resp.StatusCode, resp.Header, body, nil
 }
 
 // discoverAuth mencari auth-server metadata: 401 → WWW-Authenticate →
