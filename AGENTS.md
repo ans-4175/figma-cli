@@ -35,10 +35,17 @@ picked per-command:
 via Personal Access Token (`X-Figma-Token` header). This is the cheap, fast,
 default path — no daemon involved at all.
 
+**MCP login** (`mcp login`): explicit foreground discovery → DCR → user
+consent with PKCE S256 → validated, single-use loopback callback → private
+atomic token storage. One listener stays open for registration and callback.
+DCR uses the allowlisted client_name constant in oauth.go (Hermes-style
+compatibility default, disclosed in login output); consent stays with the user.
+
 **MCP path** (`mcp tools`, `mcp call`): talks to Figma's *remote* MCP server
-over Streamable HTTP, which requires OAuth 2.0 + PKCE (browser flow) instead
-of a static token. Because OAuth tokens are annoying to re-negotiate on every
-single CLI invocation, this path runs through a **background daemon**
+over Streamable HTTP using separate OAuth credentials, never a REST PAT.
+Missing/invalid credentials return an explicit login instruction; no daemon
+browser flow. To reuse credentials across invocations this path uses a
+**background daemon**
 (`figma-cli serve`) that:
 
 - holds one live MCP session (`mcpclient.go`) per account alias
@@ -47,7 +54,14 @@ single CLI invocation, this path runs through a **background daemon**
 - is auto-spawned by the client on first MCP command (`ensureDaemon()`),
   detached from the calling terminal (see build-tag section below)
 
-Client ↔ daemon protocol: newline-delimited JSON over a Unix domain socket
+Login/refresh/reset share a private per-account O_EXCL lock; stale locks are
+not automatically removed. Refresh failures preserve disk credentials; failed
+persistence is surfaced. Daemon requests are serialized to protect bearer/
+session mutation and refresh rotation. HTTP 401 retries once after refresh;
+read tools retry transient 502/503/504 and 429 (Retry-After honored) up to
+three times; mutations are never auto-retried.
+
+Client ↔ daemon protocol: newline-delimited JSON (including responses) over a Unix domain socket
 (`~/.figma-cli/daemon.sock`). Go's `net.Dial("unix", ...)` / `net.Listen`
 work on Windows too (AF_UNIX since Win10 1803+), so this same code path runs
 unmodified cross-platform — no separate Windows IPC implementation needed.
@@ -172,6 +186,7 @@ file figma-cli-windows-amd64.exe   # expect: PE32+ executable (console) x86-64, 
 | `daemon.go` | Daemon protocol (client + server), session cache, idle watchdog |
 | `daemon_unix.go` / `daemon_windows.go` | OS-specific process detachment (see build-tags section above) |
 | `mcpclient.go` | Minimal MCP client: JSON-RPC over Streamable HTTP, SSE parsing |
-| `oauth.go` | OAuth 2.0 + PKCE flow for Figma remote MCP (discovery, DCR, browser auth, token refresh) |
+| `oauth.go` | Foreground OAuth + PKCE/state validation, private atomic token store, cross-process rotation lock, refresh |
+| `oauth_test.go`, `daemon_test.go` | Focused OAuth/daemon regressions using synthetic credentials and loopback servers only |
 | `skill.go` | Embeds `skills/figma-cli.md` into the binary (`go:embed`) for `figma-cli skill` |
 | `util.go` | Small cross-file helpers |

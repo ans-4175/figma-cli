@@ -20,6 +20,20 @@ const protoVersion = "2025-06-18"
 
 var errMCPUnauthorized = fmt.Errorf("mcp: unauthorized (401)")
 
+// mcpHTTPError carries the status (and Retry-After when present) so the
+// daemon can apply bounded retries to read operations only.
+type mcpHTTPError struct {
+	Status     int
+	RetryAfter time.Duration
+}
+
+func (e *mcpHTTPError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("MCP HTTP %d (Retry-After %s)", e.Status, e.RetryAfter)
+	}
+	return fmt.Sprintf("MCP HTTP %d", e.Status)
+}
+
 type mcpClient struct {
 	serverURL  string
 	token      string
@@ -32,7 +46,7 @@ func newMCPClient(serverURL, token string) *mcpClient {
 	return &mcpClient{
 		serverURL:  serverURL,
 		token:      token,
-		httpClient: &http.Client{Timeout: 300 * time.Second},
+		httpClient: &http.Client{Timeout: 300 * time.Second, CheckRedirect: denyOAuthRedirect},
 	}
 }
 
@@ -64,10 +78,9 @@ func (c *mcpClient) postWith(hc *http.Client, payload []byte) (*http.Response, [
 		resp.Body.Close()
 		return resp, nil, errMCPUnauthorized
 	}
-	if resp.StatusCode == 404 || resp.StatusCode == 405 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode/100 != 2 {
 		resp.Body.Close()
-		return resp, nil, fmt.Errorf("server menolak transport HTTP (status %d): %s", resp.StatusCode, truncate(string(body), 200))
+		return resp, nil, &mcpHTTPError{Status: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 	ct := resp.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "text/event-stream") {
@@ -144,7 +157,10 @@ func (c *mcpClient) call(method string, params any, timeout time.Duration) (json
 	}
 	hc := c.httpClient
 	if timeout > 0 {
-		hc = &http.Client{Timeout: timeout}
+		timed := *c.httpClient
+		timed.Timeout = timeout
+		timed.CheckRedirect = denyOAuthRedirect
+		hc = &timed
 	}
 	resp, body, err := c.postWith(hc, payload)
 	if err != nil {

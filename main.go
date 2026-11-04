@@ -79,14 +79,14 @@ Usage:
   figma-cli config get | set token-file <path> | clear token-file
                                         Arahkan ke file kredensial
                                         (token mentah atau FIGMA_TOKEN=…)
-  figma-cli mcp tools                   Daftar tool MCP (OAuth; buka browser
-                                        saat pertama kali)
+  figma-cli mcp login [--account A]    OAuth MCP di foreground (consent user)
+  figma-cli mcp tools [--json]          Daftar tool + schema (login dahulu)
   figma-cli mcp call --tool T [--args '{…}'] [url] [nodeID]
                                         Panggil tool MCP (hasil gambar → PNG)
-  figma-cli mcp status|reset [alias]    Cek / hapus OAuth per-alias
+  figma-cli mcp status|reset [--account A] Cek / hapus OAuth lokal per-alias
   figma-cli daemon status|stop          Kontrol daemon manual
   figma-cli doctor                      Cek akun, token, daemon, REST API
-  figma-cli skill | --skill             Baca skill agent (embedded)
+  figma-cli skill | --skill | --skills  Baca skill agent (PAT + OAuth setup)
 
 Flag umum: --account ALIAS  --token FIGD  --token-file PATH  --json
 URL Figma lengkap diterima langsung: node-id di URL dipakai otomatis.

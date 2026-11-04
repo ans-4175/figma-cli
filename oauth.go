@@ -9,6 +9,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -25,9 +26,60 @@ import (
 
 const mcpServerURL = "https://mcp.figma.com/mcp"
 
+// Figma's remote MCP allowlists DCR by exact client_name ("Claude Code" and
+// "Codex" register; other names get 403 before browser login). Mirror the
+// documented Hermes Agent compatibility default and disclose it in output;
+// the user still logs in and consents with their own account, and no other
+// client's credentials or tokens are touched. Figma can change the allowlist
+// anytime — catalog listing remains the official path.
+const figmaDCRClientName = "Claude Code"
+const figmaDefaultScope = "mcp:connect"
+
+// Never forward OAuth credentials through redirects.
+var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: denyOAuthRedirect}
+
+func denyOAuthRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+func validateOAuthEndpoint(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("OAuth endpoint harus HTTPS tanpa userinfo/fragment")
+	}
+	return nil
+}
+
+func validateMCPAlias(alias string) error {
+	if alias == "" || len(alias) > 128 {
+		return fmt.Errorf("alias MCP harus 1–128 karakter: huruf, angka, '_' atau '-'")
+	}
+	for _, c := range alias {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return fmt.Errorf("alias MCP hanya boleh berisi huruf, angka, '_' atau '-'")
+		}
+	}
+	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("direktori kredensial bukan direktori biasa")
+	}
+	return os.Chmod(path, 0o700)
+}
+
 type mcpTokens struct {
 	ServerURL     string `json:"server_url"`
 	ClientID      string `json:"client_id"`
+	ClientSecret  string `json:"client_secret,omitempty"`
 	RedirectURI   string `json:"redirect_uri"`
 	AuthEndpoint  string `json:"auth_endpoint"`
 	TokenEndpoint string `json:"token_endpoint"`
@@ -41,6 +93,13 @@ type mcpTokens struct {
 // ---- token store per alias ----
 
 func loadTokens(alias string) (*mcpTokens, bool) {
+	if validateMCPAlias(alias) != nil {
+		return nil, false
+	}
+	info, err := os.Lstat(tokenFile(alias))
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
 	raw, err := os.ReadFile(tokenFile(alias))
 	if err != nil {
 		return nil, false
@@ -53,18 +112,77 @@ func loadTokens(alias string) (*mcpTokens, bool) {
 }
 
 func saveTokens(alias string, t *mcpTokens) error {
-	if err := os.MkdirAll(mcpAuthDir(), 0o700); err != nil {
+	if err := validateMCPAlias(alias); err != nil {
 		return err
+	}
+	for _, dir := range []string{cliDir(), mcpAuthDir()} {
+		if err := ensurePrivateDir(dir); err != nil {
+			return err
+		}
 	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(tokenFile(alias), data, 0o600)
+	// Replace atomically from a private sibling; never truncate the last
+	// good token file or follow a symlink at its destination.
+	f, err := os.CreateTemp(mcpAuthDir(), ".oauth-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), tokenFile(alias))
 }
 
-func clearTokens(alias string) {
-	os.Remove(tokenFile(alias))
+// A cross-process, fail-closed lock prevents simultaneous login/refresh/reset
+// from overwriting a newly rotated refresh token. A crashed owner may leave a
+// lock; do not automatically delete it or assume another process is dead.
+func acquireOAuthLock(alias string) (func(), error) {
+	if err := validateMCPAlias(alias); err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{cliDir(), mcpAuthDir()} {
+		if err := ensurePrivateDir(dir); err != nil {
+			return nil, err
+		}
+	}
+	path := tokenFile(alias) + ".lock"
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("OAuth account sedang terkunci atau lock tidak dapat dibuat; cek proses pemilik sebelum menghapus stale lock: %w", err)
+	}
+	if _, err := fmt.Fprintf(f, "pid=%d\n", os.Getpid()); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return nil, err
+	}
+	return func() { os.Remove(path) }, nil
+}
+
+func clearTokens(alias string) error {
+	unlock, err := acquireOAuthLock(alias)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := os.Remove(tokenFile(alias)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // ---- discovery (RFC 9728 + RFC 8414) ----
@@ -85,6 +203,9 @@ type authServerMeta struct {
 }
 
 func httpGetJSON(rawURL string, hdrs map[string]string) (int, http.Header, []byte, error) {
+	if err := validateOAuthEndpoint(rawURL); err != nil {
+		return 0, nil, nil, err
+	}
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return 0, nil, nil, err
@@ -92,7 +213,7 @@ func httpGetJSON(rawURL string, hdrs map[string]string) (int, http.Header, []byt
 	for k, v := range hdrs {
 		req.Header.Set(k, v)
 	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -111,7 +232,7 @@ func discoverAuth() (*protectedResource, *authServerMeta, error) {
 		u.Scheme + "://" + u.Host + "/.well-known/oauth-protected-resource",
 		u.Scheme + "://" + u.Host + "/.well-known/oauth-protected-resource" + u.Path,
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := oauthHTTPClient
 	probeReq, _ := http.NewRequest("POST", mcpServerURL, strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`))
 	probeReq.Header.Set("Content-Type", "application/json")
 	probeReq.Header.Set("Accept", "application/json, text/event-stream")
@@ -200,37 +321,43 @@ func sha256URLB64(s string) string {
 
 // ---- DCR (RFC 7591) ----
 
-func registerClient(asm *authServerMeta, redirectURI string) (string, error) {
+func registerClient(asm *authServerMeta, redirectURI string) (string, string, error) {
 	if asm.RegistrationEndpoint == "" {
-		return "", fmt.Errorf("auth server tidak menyediakan registration_endpoint (DCR)")
+		return "", "", fmt.Errorf("auth server tidak menyediakan registration_endpoint (DCR)")
+	}
+	if err := validateOAuthEndpoint(asm.RegistrationEndpoint); err != nil {
+		return "", "", err
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"client_name":                "figma-cli",
-		"redirect_uris":              []string{redirectURI},
-		"grant_types":                []string{"authorization_code", "refresh_token"},
-		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "none",
-		"client_public":              true,
+		"client_name":    figmaDCRClientName,
+		"redirect_uris":  []string{redirectURI},
+		"grant_types":    []string{"authorization_code", "refresh_token"},
+		"response_types": []string{"code"},
+		// Figma advertises auth_method=none yet demands the returned
+		// client_secret at the token endpoint; request a confidential
+		// registration so exchange/refresh can post it (Hermes-documented).
+		"token_endpoint_auth_method": "client_secret_post",
 	})
 	req, _ := http.NewRequest("POST", asm.RegistrationEndpoint, strings.NewReader(string(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("DCR gagal HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
+		return "", "", fmt.Errorf("DCR gagal HTTP %d — registrasi ditolak oleh server (allowlist bisa berubah; coba lagi nanti atau cek katalog resmi Figma)", resp.StatusCode)
 	}
 	var out struct {
-		ClientID string `json:"client_id"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
 	}
 	if json.Unmarshal(body, &out) != nil || out.ClientID == "" {
-		return "", fmt.Errorf("respons DCR tidak mengandung client_id: %s", truncate(string(body), 300))
+		return "", "", fmt.Errorf("respons DCR tidak mengandung client_id")
 	}
-	return out.ClientID, nil
+	return out.ClientID, out.ClientSecret, nil
 }
 
 // ---- authorize via browser + localhost callback ----
@@ -251,24 +378,65 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
-// authorizeInBrowser membuka browser, menangkap callback di localhost, dan
-// mengembalikan (authorization code, code_verifier) yang cocok.
-func authorizeInBrowser(asm *authServerMeta, clientID, redirectURI, scope, resource string) (string, string, error) {
-	verifier := randomURLB64(64)
-	state := randomURLB64(16)
+// oauthCallbackHandler accepts one GET callback bound to this flow's state.
+// Invalid/unsolicited callbacks do not consume the pending authorization.
+func oauthCallbackHandler(state string, codes chan<- string, failures chan<- string) http.Handler {
+	var once sync.Once
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if r.URL.Path != "/callback" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "GET required", http.StatusMethodNotAllowed)
+			return
+		}
+		q := r.URL.Query()
+		if state == "" || len(q["state"]) != 1 || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+			return
+		}
+		code, denied := q.Get("code"), q.Get("error") != ""
+		if (!denied && (code == "" || len(q["code"]) != 1)) || (denied && (code != "" || len(q["error"]) != 1)) {
+			http.Error(w, "Invalid OAuth callback", http.StatusBadRequest)
+			return
+		}
+		accepted := false
+		once.Do(func() {
+			accepted = true
+			if denied {
+				failures <- "otorisasi ditolak oleh provider"
+			} else {
+				codes <- code
+			}
+		})
+		if !accepted {
+			http.Error(w, "OAuth callback already used", http.StatusConflict)
+			return
+		}
+		fmt.Fprintln(w, "Otorisasi selesai. Kembali ke terminal figma-cli.")
+	})
+}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+func callbackRedirectURI(ln net.Listener) string {
+	return "http://" + ln.Addr().String() + "/callback"
+}
+
+// The same live loopback listener is used for registration, authorization,
+// and exchange. Keeping it open prevents callback port substitution/races.
+func authorizeInBrowser(asm *authServerMeta, clientID, scope, resource string, ln net.Listener, openURL func(string) error) (string, string, error) {
+	if err := validateOAuthEndpoint(asm.AuthorizationEndpoint); err != nil {
 		return "", "", err
 	}
-	// redirectURI harus cocok dengan port yang benar-benar dipakai.
-	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("http://127.0.0.1:%d/callback", ln.Addr().(*net.TCPAddr).Port)
-	}
+	verifier := randomURLB64(64)
+	state := randomURLB64(32)
 	q := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
-		"redirect_uri":          {redirectURI},
+		"redirect_uri":          {callbackRedirectURI(ln)},
 		"state":                 {state},
 		"code_challenge":        {sha256URLB64(verifier)},
 		"code_challenge_method": {"S256"},
@@ -279,43 +447,36 @@ func authorizeInBrowser(asm *authServerMeta, clientID, redirectURI, scope, resou
 	if resource != "" {
 		q.Set("resource", resource)
 	}
-	authURL := asm.AuthorizationEndpoint + "?" + q.Encode()
-
-	codeCh := make(chan string, 1)
-	errCh := make(chan string, 1)
-	var once sync.Once
-	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("error") != "" {
-			msg := r.URL.Query().Get("error") + ": " + r.URL.Query().Get("error_description")
-			once.Do(func() { errCh <- msg })
-			fmt.Fprint(w, `<html><body><h2>Autorisasi gagal.</h2>Cek terminal figma-cli.</body></html>`)
-			return
-		}
-		code := r.URL.Query().Get("code")
-		fmt.Fprint(w, `<html><body><h2>✅ Otorisasi selesai.</h2>Kembali ke terminal.</body></html>`)
-		if code != "" {
-			once.Do(func() { codeCh <- code })
-		}
-	})
-	srv := &http.Server{Handler: mux}
-	go srv.Serve(ln)
+	authURL, _ := url.Parse(asm.AuthorizationEndpoint)
+	query := authURL.Query()
+	for k, values := range q {
+		query[k] = values
+	}
+	authURL.RawQuery = query.Encode()
+	codes, failures := make(chan string, 1), make(chan string, 1)
+	srv := &http.Server{
+		Handler:           oauthCallbackHandler(state, codes, failures),
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
 	defer srv.Close()
 
-	fmt.Println("🔐 Membuka browser untuk otorisasi Figma…")
-	fmt.Println("   (kalau browser tidak terbuka, buka manual URL di bawah)")
-	fmt.Println()
-	fmt.Println(authURL)
-	fmt.Println()
-	if err := openBrowser(authURL); err != nil {
+	fmt.Println("🔐 Otorisasi Figma: login dan consent harus dilakukan oleh pengguna.")
+	fmt.Println("Jika browser tidak terbuka, buka URL ini pada mesin dengan akses ke callback loopback:")
+	fmt.Println(authURL.String())
+	if err := openURL(authURL.String()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
-
 	select {
-	case code := <-codeCh:
+	case code := <-codes:
 		return code, verifier, nil
-	case emsg := <-errCh:
-		return "", "", fmt.Errorf("otorisasi ditolak: %s", emsg)
+	case msg := <-failures:
+		return "", "", fmt.Errorf("%s", msg)
+	case err := <-serveErr:
+		return "", "", fmt.Errorf("OAuth callback server: %w", err)
 	case <-time.After(5 * time.Minute):
 		return "", "", fmt.Errorf("timeout menunggu otorisasi browser (5 menit)")
 	}
@@ -331,32 +492,44 @@ type tokenResp struct {
 }
 
 func tokenPOST(endpoint string, form url.Values) (*tokenResp, error) {
-	req, _ := http.NewRequest("POST", endpoint, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err := validateOAuthEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := oauthHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OAuth token request gagal: %w", err)
+	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Do not echo provider response bodies: they can contain credentials.
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("token endpoint HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
+		return nil, fmt.Errorf("OAuth token endpoint HTTP %d", resp.StatusCode)
 	}
 	var tr tokenResp
-	if json.Unmarshal(body, &tr) != nil || tr.AccessToken == "" {
-		return nil, fmt.Errorf("respons token tidak mengandung access_token: %s", truncate(string(body), 300))
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tr); err != nil {
+		return nil, fmt.Errorf("respons OAuth token tidak valid")
+	}
+	if tr.AccessToken == "" || strings.ContainsAny(tr.AccessToken, "\r\n") || tr.ExpiresIn <= 0 || tr.ExpiresIn > int64((365*24*time.Hour)/time.Second) || (tr.TokenType != "" && !strings.EqualFold(tr.TokenType, "Bearer")) {
+		return nil, fmt.Errorf("respons OAuth token tidak valid: access_token, expires_in, atau token_type")
 	}
 	return &tr, nil
 }
 
-func exchangeCode(asm *authServerMeta, clientID, redirectURI, code, verifier, resource string) (*tokenResp, error) {
+func exchangeCode(asm *authServerMeta, clientID, clientSecret, redirectURI, code, verifier, resource string) (*tokenResp, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"client_id":     {clientID},
 		"code_verifier": {verifier},
+	}
+	if clientSecret != "" {
+		form.Set("client_secret", clientSecret)
 	}
 	if resource != "" {
 		form.Set("resource", resource)
@@ -367,10 +540,16 @@ func exchangeCode(asm *authServerMeta, clientID, redirectURI, code, verifier, re
 // refreshAccessToken memperbarui access token; refresh token lama dipakai
 // kalau respons tidak mengirim refresh token baru.
 func refreshAccessToken(t *mcpTokens) (*mcpTokens, error) {
+	if t.RefreshToken == "" {
+		return nil, fmt.Errorf("refresh token tidak tersedia")
+	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {t.RefreshToken},
 		"client_id":     {t.ClientID},
+	}
+	if t.ClientSecret != "" {
+		form.Set("client_secret", t.ClientSecret)
 	}
 	if t.Resource != "" {
 		form.Set("resource", t.Resource)
@@ -379,47 +558,86 @@ func refreshAccessToken(t *mcpTokens) (*mcpTokens, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Do not mutate the active session until persistence succeeds.
+	next := *t
 	if tr.RefreshToken != "" {
-		t.RefreshToken = tr.RefreshToken
+		next.RefreshToken = tr.RefreshToken
 	}
-	t.AccessToken = tr.AccessToken
-	t.ExpiresAt = time.Now().Add(time.Duration(tr.ExpiresIn-60) * time.Second).Unix()
-	return t, nil
+	next.AccessToken = tr.AccessToken
+	next.ExpiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).Unix()
+	return &next, nil
+}
+
+func refreshAndSave(alias string, t *mcpTokens) (*mcpTokens, error) {
+	unlock, err := acquireOAuthLock(alias)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	// Another process may have refreshed before we acquired the lock.
+	if saved, ok := loadTokens(alias); ok && saved.AccessToken != t.AccessToken {
+		if time.Now().Unix() < saved.ExpiresAt-60 {
+			return saved, nil
+		}
+		t = saved
+	}
+	next, err := refreshAccessToken(t)
+	if err != nil {
+		return nil, fmt.Errorf("refresh OAuth gagal; login ulang bila diperlukan dengan figma-cli mcp login --account %s: %w", alias, err)
+	}
+	if err := saveTokens(alias, next); err != nil {
+		return nil, fmt.Errorf("token OAuth diperbarui tetapi gagal disimpan; jangan lanjut unattended, lakukan login ulang: %w", err)
+	}
+	return next, nil
 }
 
 // ---- orkestrasi tingkat tinggi ----
 
-// getValidAccessToken mengembalikan access token valid untuk alias:
-// cache → refresh → flow OAuth penuh (buka browser).
+// getValidAccessToken never starts interactive authorization inside a daemon.
+// Login is explicit and foreground-only; refresh failures preserve saved tokens.
 func getValidAccessToken(alias string) (*mcpTokens, error) {
+	if err := validateMCPAlias(alias); err != nil {
+		return nil, err
+	}
 	if t, ok := loadTokens(alias); ok {
 		if time.Now().Unix() < t.ExpiresAt-60 {
 			return t, nil
 		}
 		if t.RefreshToken != "" {
-			nt, rerr := refreshAccessToken(t)
-			if rerr == nil {
-				saveTokens(alias, nt)
-				fmt.Fprintf(os.Stderr, "🔑 token MCP diperbarui (account %q)\n", alias)
-				return nt, nil
-			}
-			fmt.Fprintf(os.Stderr, "⚠️  refresh token gagal (%v) — otorisasi ulang\n", rerr)
+			return refreshAndSave(alias, t)
 		}
 	}
-	return runOAuthFlow(alias)
+	return nil, fmt.Errorf("OAuth MCP belum tersedia/valid; jalankan figma-cli mcp login --account %s", alias)
 }
 
 // runOAuthFlow menjalankan discovery → DCR → browser → exchange → save.
 func runOAuthFlow(alias string) (*mcpTokens, error) {
+	unlock, err := acquireOAuthLock(alias)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	pr, asm, err := discoverAuth()
 	if err != nil {
 		return nil, err
+	}
+	if len(asm.CodeChallengeMethodsSupported) > 0 {
+		supported := false
+		for _, method := range asm.CodeChallengeMethodsSupported {
+			supported = supported || method == "S256"
+		}
+		if !supported {
+			return nil, fmt.Errorf("OAuth server tidak mendukung PKCE S256; tidak boleh downgrade")
+		}
 	}
 	scope := ""
 	if pr != nil && len(pr.ScopesSupported) > 0 {
 		scope = strings.Join(pr.ScopesSupported, " ")
 	} else if len(asm.ScopesSupported) > 0 && len(asm.ScopesSupported) <= 8 {
 		scope = strings.Join(asm.ScopesSupported, " ")
+	}
+	if scope == "" {
+		scope = figmaDefaultScope
 	}
 	resource := ""
 	if pr != nil && pr.Resource != "" {
@@ -430,32 +648,33 @@ func runOAuthFlow(alias string) (*mcpTokens, error) {
 	if err != nil {
 		return nil, err
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	defer ln.Close()
+	redirectURI := callbackRedirectURI(ln)
 
-	clientID := ""
+	clientID, clientSecret := "", ""
 	if old, ok := loadTokens(alias); ok && old.ClientID != "" && old.RedirectURI == redirectURI {
-		clientID = old.ClientID // reuse registrasi lama kalau port kebetulan sama
+		clientID, clientSecret = old.ClientID, old.ClientSecret // reuse registrasi lama kalau port kebetulan sama
 	}
 	if clientID == "" {
-		clientID, err = registerClient(asm, redirectURI)
+		fmt.Fprintf(os.Stderr, "🔑 Figma DCR: mendaftar dengan client_name=%q (default kompatibilitas ala Hermes Agent; login & consent tetap milikmu)\n", figmaDCRClientName)
+		clientID, clientSecret, err = registerClient(asm, redirectURI)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	code, verifier, err := authorizeInBrowser(asm, clientID, redirectURI, scope, resource)
+	code, verifier, err := authorizeInBrowser(asm, clientID, scope, resource, ln, openBrowser)
 	if err != nil {
 		return nil, err
 	}
-	tr, err := exchangeCode(asm, clientID, redirectURI, code, verifier, resource)
+	tr, err := exchangeCode(asm, clientID, clientSecret, redirectURI, code, verifier, resource)
 	if err != nil {
 		return nil, err
 	}
 	t := &mcpTokens{
 		ServerURL:     mcpServerURL,
 		ClientID:      clientID,
+		ClientSecret:  clientSecret,
 		RedirectURI:   redirectURI,
 		AuthEndpoint:  asm.AuthorizationEndpoint,
 		TokenEndpoint: asm.TokenEndpoint,
@@ -463,7 +682,7 @@ func runOAuthFlow(alias string) (*mcpTokens, error) {
 		Resource:      resource,
 		AccessToken:   tr.AccessToken,
 		RefreshToken:  tr.RefreshToken,
-		ExpiresAt:     time.Now().Add(time.Duration(tr.ExpiresIn-60) * time.Second).Unix(),
+		ExpiresAt:     time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second).Unix(),
 	}
 	if err := saveTokens(alias, t); err != nil {
 		return nil, err

@@ -10,12 +10,15 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -32,9 +35,10 @@ type mcpState struct {
 }
 
 type daemon struct {
-	mu       sync.Mutex
-	states   map[string]*mcpState
-	lastUsed time.Time
+	requestMu sync.Mutex // serialize session use, refresh rotation, and explicit login/reset
+	mu        sync.Mutex
+	states    map[string]*mcpState
+	lastUsed  time.Time
 }
 
 func newDaemon() *daemon {
@@ -47,60 +51,77 @@ func (d *daemon) touch() {
 	d.mu.Unlock()
 }
 
-// getSession mengembalikan sesi siap pakai: cache → refresh token → OAuth baru.
+// getSession loads persisted credentials or refreshes an expired session.
+// No background browser flow, no silent refresh/save failure.
 func (d *daemon) getSession(alias string) (*mcpClient, error) {
+	if err := validateMCPAlias(alias); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
-	st, ok := d.states[alias]
-	d.mu.Unlock()
-	if ok && st != nil {
-		// token kadaluarsa? refresh di sini (in-place).
-		if time.Now().Unix() >= st.toks.ExpiresAt-60 && st.toks.RefreshToken != "" {
-			if nt, err := refreshAccessToken(st.toks); err == nil {
-				st.toks = nt
-				st.cli.token = nt.AccessToken
-				saveTokens(alias, nt)
+	defer d.mu.Unlock()
+	if st := d.states[alias]; st != nil {
+		if time.Now().Unix() >= st.toks.ExpiresAt-60 {
+			next, err := refreshAndSave(alias, st.toks)
+			if err != nil {
+				return nil, err
 			}
+			st.toks = next
+			st.cli.token = next.AccessToken
 		}
 		return st.cli, nil
 	}
-	toks, err := getValidAccessToken(alias) // bisa buka browser
+	toks, err := getValidAccessToken(alias)
 	if err != nil {
 		return nil, err
 	}
 	cli := newMCPClient(mcpServerURL, toks.AccessToken)
-	if err := cli.initialize(); err != nil {
-		if err == errMCPUnauthorized && toks.RefreshToken != "" {
-			// token baru saja invalid — refresh lalu coba sekali lagi
-			if nt, rerr := refreshAccessToken(toks); rerr == nil {
-				saveTokens(alias, nt)
-				cli = newMCPClient(mcpServerURL, nt.AccessToken)
-				if err2 := cli.initialize(); err2 == nil {
-					toks = nt
-					err = nil
-				}
-			}
-		}
-		if err != nil {
+	if err := initWithRetry(cli); err != nil {
+		if err != errMCPUnauthorized {
 			return nil, fmt.Errorf("initialize MCP gagal: %w", err)
 		}
+		toks, err = refreshAndSave(alias, toks)
+		if err != nil {
+			return nil, err
+		}
+		cli = newMCPClient(mcpServerURL, toks.AccessToken)
+		if err := cli.initialize(); err != nil {
+			return nil, fmt.Errorf("initialize MCP setelah refresh gagal: %w", err)
+		}
 	}
-	st = &mcpState{alias: alias, toks: toks, cli: cli}
-	d.mu.Lock()
-	d.states[alias] = st
-	d.mu.Unlock()
+	d.states[alias] = &mcpState{alias: alias, toks: toks, cli: cli}
 	return cli, nil
 }
 
-func (d *daemon) resetSession(alias string) {
+func (d *daemon) resetSession(alias string) error {
 	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := clearTokens(alias); err != nil {
+		return err
+	}
 	delete(d.states, alias)
-	d.mu.Unlock()
-	clearTokens(alias)
+	return nil
 }
 
 // ---- penanganan request client ----
 
 func (d *daemon) handle(req *cliReq) *cliResp {
+	d.requestMu.Lock()
+	defer d.requestMu.Unlock()
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(req.Params, &params); err != nil || params == nil {
+		return errResp(req.ID, fmt.Errorf("params harus objek JSON"))
+	}
+	alias := "default"
+	if raw, ok := params["account"]; ok {
+		if err := json.Unmarshal(raw, &alias); err != nil {
+			return errResp(req.ID, fmt.Errorf("account harus string"))
+		}
+	}
+	if err := validateMCPAlias(alias); err != nil {
+		return errResp(req.ID, err)
+	}
+	params["account"] = mustJSON(alias)
+	req.Params = mustJSON(params)
 	switch req.Op {
 	case "mcp.tools":
 		var p struct {
@@ -111,11 +132,23 @@ func (d *daemon) handle(req *cliReq) *cliResp {
 		if err != nil {
 			return errResp(req.ID, err)
 		}
-		tools, err := cli.listTools()
+		var tools []mcpToolInfo
+		fetch := func() error {
+			var e error
+			tools, e = cli.listTools()
+			return e
+		}
+		err = fetch()
 		if err == errMCPUnauthorized {
-			if cli2, rerr := d.reauthAndRetry(p.Account, func(c *mcpClient) error { _, err := c.listTools(); return err }); rerr == nil {
-				tools, err = cli2.listTools()
+			var next *mcpClient
+			next, err = d.reauth(p.Account)
+			if err == nil {
+				cli = next
+				err = fetch()
 			}
+		}
+		if err != nil && err != errMCPUnauthorized {
+			err = retryMCPRead(fetch)
 		}
 		if err != nil {
 			return errResp(req.ID, err)
@@ -140,13 +173,24 @@ func (d *daemon) handle(req *cliReq) *cliResp {
 		if timeout <= 0 {
 			timeout = 180 * time.Second
 		}
-		result, err := cli.callTool(p.Tool, p.Args, timeout)
+		var result *mcpCallResult
+		callOnce := func() error {
+			var e error
+			result, e = cli.callTool(p.Tool, p.Args, timeout)
+			return e
+		}
+		err = callOnce()
 		if err == errMCPUnauthorized {
 			var cli2 *mcpClient
 			cli2, err = d.reauth(p.Account)
 			if err == nil {
-				result, err = cli2.callTool(p.Tool, p.Args, timeout)
+				cli = cli2
+				err = callOnce()
 			}
+		}
+		if err != nil && err != errMCPUnauthorized && isMCPReadTool(p.Tool) {
+			// Bounded retry for transient read failures only.
+			err = retryMCPRead(callOnce)
 		}
 		if err != nil {
 			return errResp(req.ID, err)
@@ -174,12 +218,20 @@ func (d *daemon) handle(req *cliReq) *cliResp {
 		out["running"] = running
 		return okResp(req.ID, out)
 
+	case "mcp.invalidate":
+		d.mu.Lock()
+		delete(d.states, alias)
+		d.mu.Unlock()
+		return okResp(req.ID, map[string]any{"invalidated": alias})
+
 	case "mcp.reset":
 		var p struct {
 			Account string `json:"account"`
 		}
 		json.Unmarshal(req.Params, &p)
-		d.resetSession(p.Account)
+		if err := d.resetSession(p.Account); err != nil {
+			return errResp(req.ID, err)
+		}
 		return okResp(req.ID, map[string]any{"reset": p.Account})
 
 	default:
@@ -187,26 +239,26 @@ func (d *daemon) handle(req *cliReq) *cliResp {
 	}
 }
 
-// reauth memaksa OAuth ulang untuk alias lalu mengembalikan sesi baru.
+// reauth refreshes on an unexpected 401, without deleting valid credentials
+// or starting an interactive login. A rejected refresh is surfaced to the user.
 func (d *daemon) reauth(alias string) (*mcpClient, error) {
-	d.resetSession(alias)
-	if _, err := d.getSession(alias); err != nil {
-		return nil, err
-	}
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	st := d.states[alias]
-	d.mu.Unlock()
-	return st.cli, nil
-}
-
-func (d *daemon) reauthAndRetry(alias string, probe func(*mcpClient) error) (*mcpClient, error) {
-	cli, err := d.reauth(alias)
+	if st == nil {
+		return nil, fmt.Errorf("sesi MCP tidak tersedia; jalankan mcp login")
+	}
+	next, err := refreshAndSave(alias, st.toks)
 	if err != nil {
 		return nil, err
 	}
-	if err := probe(cli); err != nil {
-		return nil, err
+	cli := newMCPClient(st.cli.serverURL, next.AccessToken)
+	if err := initWithRetry(cli); err != nil {
+		// Rotated tokens are already on disk. Drop the rejected session only.
+		delete(d.states, alias)
+		return nil, fmt.Errorf("initialize MCP setelah refresh gagal: %w", err)
 	}
+	d.states[alias] = &mcpState{alias: alias, toks: next, cli: cli}
 	return cli, nil
 }
 
@@ -262,6 +314,11 @@ func runDaemon() error {
 	if err != nil {
 		return err
 	}
+	if err := os.Chmod(sockPath(), 0o600); err != nil {
+		ln.Close()
+		os.Remove(sockPath())
+		return err
+	}
 	defer func() {
 		ln.Close()
 		os.Remove(sockPath())
@@ -283,6 +340,7 @@ func runDaemon() error {
 				if idle > idleTTL {
 					log.Printf("idle %s — daemon berhenti", idle.Truncate(time.Second))
 					close(done)
+					ln.Close()
 					return
 				}
 			case <-done:
@@ -323,15 +381,54 @@ func runDaemon() error {
 				}
 				var req cliReq
 				if json.Unmarshal(line, &req) != nil {
-					c.Write(mustJSON(errResp("?", fmt.Errorf("request bukan JSON"))))
+					if err := writeDaemonResponse(c, errResp("?", fmt.Errorf("request bukan JSON"))); err != nil {
+						return
+					}
 					continue
 				}
 				d.touch()
 				resp := d.handle(&req)
-				c.Write(mustJSON(resp))
+				if err := writeDaemonResponse(c, resp); err != nil {
+					return
+				}
 			}
 		}(conn)
 	}
+}
+
+func writeDaemonResponse(w io.Writer, resp *cliResp) error {
+	return json.NewEncoder(w).Encode(resp)
+}
+
+const mcpMaxAttempts = 3
+
+// Bounded backoff for transient MCP read failures; overridden in tests.
+var mcpRetryBackoff = 750 * time.Millisecond
+
+// Mutating tools are never auto-retried: the server may have applied the
+// change before the failed response, and a replay could duplicate it.
+func isMCPReadTool(name string) bool {
+	return strings.HasPrefix(name, "get_") || strings.HasPrefix(name, "list_") ||
+		strings.HasPrefix(name, "search_") || name == "whoami" ||
+		name == "weave_list_tools" || name == "weave_get_tool_inputs" ||
+		name == "weave_get_tool_run_output" || name == "weave_find_model"
+}
+
+func retryMCPRead(fn func() error) error {
+	for attempt := 0; ; attempt++ {
+		err := fn()
+		var httpErr *mcpHTTPError
+		if err == nil || !errors.As(err, &httpErr) ||
+			(httpErr.Status != 429 && httpErr.Status != 502 && httpErr.Status != 503 && httpErr.Status != 504) ||
+			attempt >= mcpMaxAttempts-1 {
+			return err
+		}
+		time.Sleep(retryDelay(attempt, httpErr.RetryAfter))
+	}
+}
+
+func initWithRetry(cli *mcpClient) error {
+	return retryMCPRead(func() error { return cli.initialize() })
 }
 
 func mustJSON(v any) []byte {

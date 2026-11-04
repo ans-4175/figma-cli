@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -546,7 +547,7 @@ func cmdAccounts(args []string) error {
 
 func cmdMCP(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: figma-cli mcp tools|call|status|reset …")
+		return fmt.Errorf("usage: figma-cli mcp login|tools|call|status|reset …")
 	}
 	sub, rest := args[0], args[1:]
 	fs := flag.NewFlagSet("mcp "+sub, flag.ExitOnError)
@@ -555,11 +556,30 @@ func cmdMCP(args []string) error {
 	var tool string
 	var timeoutSec int
 	switch sub {
+	case "login":
+		fs.Parse(rest)
+		if _, err := runOAuthFlow(*account); err != nil {
+			return err
+		}
+		// Do not start a daemon just for login; invalidate an existing cached
+		// session without deleting the freshly saved credentials.
+		if conn, err := net.Dial("unix", sockPath()); err == nil {
+			conn.Close()
+			if _, err := callDaemon("mcp.invalidate", map[string]any{"account": *account}, 30*time.Second); err != nil {
+				return fmt.Errorf("OAuth tersimpan, tetapi cache daemon belum diperbarui; hentikan daemon saat tidak ada command aktif: %w", err)
+			}
+		}
+		return nil
 	case "tools":
+		jsonOut := fs.Bool("json", false, "tampilkan tools dan inputSchema lengkap")
 		fs.Parse(rest)
 		data, err := callDaemon("mcp.tools", map[string]any{"account": *account}, 330*time.Second)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			fmt.Println(string(data))
+			return nil
 		}
 		var tools []mcpToolInfo
 		if err := json.Unmarshal(data, &tools); err != nil {
@@ -656,7 +676,7 @@ func cmdMCP(args []string) error {
 			Expired    bool   `json:"expired"`
 		}
 		json.Unmarshal(data, &st)
-		auth := "belum ada OAuth (panggil `mcp tools` untuk mulai)"
+		auth := "belum ada OAuth (jalankan `mcp login` untuk mulai)"
 		if st.Authorized {
 			auth = fmt.Sprintf("ada (expired=%v, expires_at=%s)", st.Expired, time.Unix(st.ExpiresAt, 0).Format(time.RFC3339))
 		}

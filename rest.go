@@ -11,11 +11,35 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const apiBase = "https://api.figma.com/v1"
+var apiBase = "https://api.figma.com/v1"
+
+// Bounded backoff for transient REST failures; overridden in tests.
+var restRetryBackoff = 750 * time.Millisecond
+
+func parseRetryAfter(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && secs >= 0 {
+		if time.Duration(secs)*time.Second > 30*time.Second {
+			return 30 * time.Second
+		}
+		return time.Duration(secs) * time.Second
+	}
+	return 0
+}
+
+func retryDelay(attempt int, after time.Duration) time.Duration {
+	if after > 0 {
+		return after
+	}
+	return restRetryBackoff << attempt
+}
 
 var (
 	reFile = regexp.MustCompile(`figma\.com/(?:file|design|proto|board|site)/([A-Za-z0-9]+)`)
@@ -51,46 +75,53 @@ func parseFigmaRef(rawURL, fileKey, nodeID string) (figmaRef, error) {
 	return ref, nil
 }
 
-// figmaAPI memanggil endpoint REST dan mengembalikan JSON mentah.
+// figmaAPI memanggil endpoint REST (semuanya GET/read) dan mengembalikan
+// JSON mentah. Transient 502/503/504 dan 429 di-retry maksimal 3 percobaan
+// dengan hormat ke Retry-After; 401/403/404 gagal tanpa retry.
 func figmaAPI(path, token string, query url.Values) (json.RawMessage, error) {
 	u := apiBase + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequest("GET", u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Figma-Token", token)
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	switch resp.StatusCode {
-	case 200:
-		return json.RawMessage(body), nil
-	case 401:
-		return nil, fmt.Errorf("401 Unauthorized — token invalid/expired (figma-cli doctor)")
-	case 403:
-		return nil, fmt.Errorf("403 Forbidden — akun ini tidak punya akses ke file; coba --account lain")
-	case 404:
-		return nil, fmt.Errorf("404 Not Found — fileKey/nodeID salah atau file terhapus")
-	case 429:
-		msg := "429 rate limited"
-		if lt := resp.Header.Get("X-Figma-Rate-Limit-Type"); lt != "" {
-			msg += " (seat-type: " + lt + ")"
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			return nil, err
 		}
-		if ra := resp.Header.Get("Retry-After"); ra != "" {
-			msg += " — coba lagi dalam ~" + ra + " detik"
-		} else {
-			msg += " — coba lagi ~1 menit"
+		req.Header.Set("X-Figma-Token", token)
+		resp, err := client.Do(req)
+		if err != nil {
+			if attempt < 2 {
+				time.Sleep(retryDelay(attempt, 0))
+				continue
+			}
+			return nil, err
 		}
-		return nil, fmt.Errorf(msg)
-	default:
-		return nil, fmt.Errorf("Figma API %d: %s", resp.StatusCode, truncate(string(body), 300))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == 200:
+			return json.RawMessage(body), nil
+		case resp.StatusCode == 401:
+			return nil, fmt.Errorf("401 Unauthorized — token invalid/expired (figma-cli doctor)")
+		case resp.StatusCode == 403:
+			return nil, fmt.Errorf("403 Forbidden — akun ini tidak punya akses ke file; coba --account lain")
+		case resp.StatusCode == 404:
+			return nil, fmt.Errorf("404 Not Found — fileKey/nodeID salah atau file terhapus")
+		case resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504:
+			if attempt >= 2 {
+				msg := fmt.Sprintf("Figma API %d tetap gagal setelah %d percobaan", resp.StatusCode, attempt+1)
+				if lt := resp.Header.Get("X-Figma-Rate-Limit-Type"); lt != "" {
+					msg += " (seat-type: " + lt + ")"
+				}
+				return nil, fmt.Errorf("%s", msg)
+			}
+			time.Sleep(retryDelay(attempt, parseRetryAfter(resp.Header.Get("Retry-After"))))
+			continue
+		default:
+			return nil, fmt.Errorf("Figma API %d: %s", resp.StatusCode, truncate(string(body), 300))
+		}
 	}
 }
 
