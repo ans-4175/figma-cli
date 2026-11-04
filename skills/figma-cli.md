@@ -285,9 +285,51 @@ An inventory of converted frames is NOT a mature design system.
    definitions, variant values and layout. Track source signatures unchanged.
    List node links and any incomplete visual/behavior checks. Two lookalike
    frames are not proof of reuse.
-6. A project skill may route approved designs to a visual HTML companion,
+6. Run the mandatory review/refine loop below. Passing a structural check is
+   not completion of screen construction.
+7. A project skill may route approved designs to a visual HTML companion,
    brief, issue or MR. Do not confuse greyscale flow wireframes with faithful
    hi-fi references, or create/publish external artifacts without approval.
+
+### Mandatory gate — construct → check → review → refine → recheck
+
+Apply this loop after EVERY screen construction or material refinement:
+1. **Check structure:** REST read-back of node types, component links,
+   properties, Auto Layout, bounds and source preservation. Verify that sizing
+   checks exercise actual labels/content, not an empty match or zero children.
+2. **Review actual visuals:** inspect a rendered image at the target width,
+   beside the approved reference. Bounding boxes, metadata and a successful
+   mutation response are not visual evidence. Use user-supplied images first;
+   rendering/export requires the applicable host policy and quota permission.
+   Never bypass a screenshot restriction by exporting through another tool.
+3. **Critique before fixing:** name concrete issues in margin/alignment/grid,
+   hierarchy/type, density/whitespace, component consistency, long-content
+   handling, clipping/overflow, and overall visual appeal. Compare against the
+   product reference rather than importing an unrelated aesthetic.
+4. **Refine in place:** update the approved draft and existing components, not
+   duplicate/rebuild screens after uncertain writes. Do not detach instances,
+   silently replace fonts or invent states to make an image look convincing.
+5. **Recheck BOTH:** review the revised rendered output AND rerun affected
+   structure/reuse/width/source-preservation checks. A visual fix can break
+   links or inheritance; a structure fix can degrade the composition.
+6. Stop when no material issues remain and report evidence, not confidence.
+   After three unsuccessful refinement passes, missing visual access, or an
+   unclear acceptance target, stop and ask for input rather than claiming done.
+   Obtain explicit designer/requester acceptance when the task requires it.
+
+Track structural and visual status separately:
+- **STRUCTURE_ONLY:** nodes/reuse verified, visual review not performed.
+- **NEEDS_REFINEMENT:** visual or behavior problems remain, including explicit
+  requester rejection. This is NOT a completed P2 or an accepted screen.
+- **READY_FOR_REVIEW:** actual visuals and relevant rechecks pass the agent's
+  review; human acceptance is still pending.
+- **APPROVED:** the designated reviewer accepted the scoped result.
+
+Never equate API success, instance propagation, numeric resize tests, or a
+completed write with a good/accepted design. Report the current state plainly.
+A design system remains draft/noncanonical until its own approval gate passes.
+Use host-supported APIs: if private setPluginData is unavailable, use a stable
+namespace with setSharedPluginData for provenance/checkpoints, not code replay.
 
 ## Setup B / Workflow 3 — Remote MCP OAuth
 
