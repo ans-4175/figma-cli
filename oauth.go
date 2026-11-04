@@ -354,26 +354,38 @@ func registerClient(asm *authServerMeta, redirectURI string) (string, string, er
 		// registration so exchange/refresh can post it (Hermes-documented).
 		"token_endpoint_auth_method": "client_secret_post",
 	})
-	req, _ := http.NewRequest("POST", asm.RegistrationEndpoint, strings.NewReader(string(payload)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := oauthHTTPClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode/100 != 2 {
-		return "", "", fmt.Errorf("DCR gagal HTTP %d — registrasi ditolak oleh server (allowlist bisa berubah; coba lagi nanti atau cek katalog resmi Figma)", resp.StatusCode)
-	}
 	var out struct {
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 	}
-	if json.Unmarshal(body, &out) != nil || out.ClientID == "" {
-		return "", "", fmt.Errorf("respons DCR tidak mengandung client_id")
+	// DCR is idempotent (a retry just creates another registration), so
+	// transient transport errors and 429/502/503/504 are retried bounded.
+	for attempt := 0; ; attempt++ {
+		req, _ := http.NewRequest("POST", asm.RegistrationEndpoint, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err := oauthHTTPClient.Do(req)
+		if err != nil {
+			if attempt < 4 {
+				time.Sleep(retryDelay(attempt, 0))
+				continue
+			}
+			return "", "", fmt.Errorf("registrasi OAuth (DCR) gagal: %w", err)
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if (resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504) && attempt < 4 {
+			time.Sleep(retryDelay(attempt, parseRetryAfter(resp.Header.Get("Retry-After"))))
+			continue
+		}
+		if resp.StatusCode/100 != 2 {
+			return "", "", fmt.Errorf("DCR gagal HTTP %d — registrasi ditolak oleh server (allowlist bisa berubah; coba lagi nanti atau cek katalog resmi Figma)", resp.StatusCode)
+		}
+		if json.Unmarshal(body, &out) != nil || out.ClientID == "" {
+			return "", "", fmt.Errorf("respons DCR tidak mengandung client_id")
+		}
+		return out.ClientID, out.ClientSecret, nil
 	}
-	return out.ClientID, out.ClientSecret, nil
 }
 
 // ---- authorize via browser + localhost callback ----
