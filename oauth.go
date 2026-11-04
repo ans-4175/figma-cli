@@ -219,7 +219,7 @@ func httpGetJSON(rawURL string, hdrs map[string]string) (int, http.Header, []byt
 		}
 		resp, err := oauthHTTPClient.Do(req)
 		if err != nil {
-			if attempt < 2 {
+			if attempt < 4 {
 				time.Sleep(retryDelay(attempt, 0))
 				continue
 			}
@@ -227,8 +227,8 @@ func httpGetJSON(rawURL string, hdrs map[string]string) (int, http.Header, []byt
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
-		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
-			if attempt < 2 {
+		if resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			if attempt < 4 {
 				time.Sleep(retryDelay(attempt, parseRetryAfter(resp.Header.Get("Retry-After"))))
 				continue
 			}
@@ -258,6 +258,7 @@ func discoverAuth() (*protectedResource, *authServerMeta, error) {
 			if wa := probeResp.Header.Get("WWW-Authenticate"); wa != "" {
 				for _, part := range strings.Split(wa, ",") {
 					part = strings.TrimSpace(part)
+					part = strings.TrimPrefix(part, "Bearer ")
 					if strings.HasPrefix(part, "resource_metadata=") {
 						prURL = strings.Trim(strings.TrimPrefix(part, "resource_metadata="), `"`)
 					}
