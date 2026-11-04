@@ -1,6 +1,6 @@
 ---
 name: figma-cli
-description: Set up and use Figma CLI through two separate auth engines — PAT for REST reads and explicit OAuth/PKCE for remote MCP tools. Understand designs, inspect layers/components, troubleshoot auth, and use server-exposed canvas tools only with approved access and scope.
+description: Set up and use Figma CLI through two separate auth engines — PAT for REST reads and explicit OAuth/PKCE for remote MCP tools. Routing rule: reads go via REST/PAT, canvas edits go via MCP use_figma with approval. Understand designs, inspect layers/components, troubleshoot auth, and use server-exposed canvas tools only with approved access and scope.
 ---
 
 # figma-cli
@@ -37,6 +37,19 @@ Go flag parsing stops at the first positional argument.
 A PAT does **not** authenticate MCP. MCP OAuth does **not** supply a PAT to
 REST commands. Identically named PAT and MCP account aliases are independent.
 Never send credentials to an LLM, research provider, source control, or logs.
+
+## Routing rule: READ pakai REST, EDIT pakai MCP
+
+| Need | Route | Why |
+| --- | --- | --- |
+| Read metadata, structure, design context, variables | REST (`understand`/`file`/`node`/`components` + `--token-file`) — default | REST does not consume the account-wide MCP quota (Full seat: 200 calls/day + 10/min, shared by every MCP client of the account). |
+| REST outline is not enough (screenshot, implementation-grade context) | MCP read tools (`get_screenshot`, `get_design_context`, ...) sparingly | These consume the shared MCP quota — stay quota-aware. |
+| Edit canvas (create/modify frames, components, pages) | MCP write tools (`use_figma`, ...) ONLY with explicit user/admin approval per change | Writes are exempt from MCP rate limits today (beta free; docs say it will become usage-based paid) — approval gates blast radius, not quota. |
+
+Agents must never run `mcp login`, `mcp reset`, or `mcp config` themselves
+(admin actions), never expose or copy tokens, and never bypass 403/429.
+Transient 5xx on reads auto-retries; report persistent failures instead of
+forcing retries. On any MCP 403, stop — client eligibility is Figma's call.
 
 ## Setup A — PAT for REST (default)
 
