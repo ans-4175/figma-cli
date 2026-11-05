@@ -39,7 +39,10 @@ No deprecated projects endpoint or automatic legacy fallback is implemented.
   listing does not establish access to that separate operation.
 - Published library endpoints list **published** assets. Local/unpublished
   components and remote instances require node-tree inspection.
-- 403 retains a bounded, token-redacted server explanation. It does not imply
+- 401/403 retain a bounded, token-redacted server explanation. A 401 may also
+  indicate a missing endpoint scope (observed on folder metadata while other
+  reads succeed with the same PAT); status alone is not proof of token expiry.
+  A denial does not imply
   one cause or authorize switching accounts/endpoints to bypass access control.
 - GET retries remain bounded; 401/403/404 do not retry. Redirects are refused
   rather than forwarding a PAT to an unexpected destination.

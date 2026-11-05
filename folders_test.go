@@ -158,6 +158,25 @@ func TestRESTDoesNotForwardPATThroughRedirect(t *testing.T) {
 	}
 }
 
+func TestREST401PreservesScopeDiagnosisWithoutRetry(t *testing.T) {
+	previous := apiBase
+	defer func() { apiBase = previous }()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"message":"Invalid scope: needs folder_metadata:read"}`)
+	}))
+	defer srv.Close()
+	apiBase = srv.URL
+	_, err := figmaAPI("/v2/folders/123/meta", "synthetic-pat", nil)
+	if err == nil || calls != 1 || !strings.Contains(err.Error(), "folder_metadata:read") ||
+		!strings.Contains(err.Error(), "/v2/folders/123/meta") ||
+		strings.Contains(err.Error(), "token invalid/expired") {
+		t.Fatalf("401 alone must not claim token expiry (calls=%d err=%v)", calls, err)
+	}
+}
+
 func TestREST403ReportsScopeWithoutTokenOrFallback(t *testing.T) {
 	previous := apiBase
 	defer func() { apiBase = previous }()

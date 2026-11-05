@@ -109,7 +109,7 @@ func figmaAPI(path, token string, query url.Values) (json.RawMessage, error) {
 		case resp.StatusCode == 200:
 			return json.RawMessage(body), nil
 		case resp.StatusCode == 401:
-			return nil, fmt.Errorf("401 Unauthorized — token invalid/expired (figma-cli doctor)")
+			return nil, fmt.Errorf("401 Unauthorized (%s) — periksa kredensial DAN scope endpoint; status ini saja bukan bukti token expired%s", path, restErrorMessage(body, token))
 		case resp.StatusCode == 403:
 			message := restErrorMessage(body, token)
 			return nil, fmt.Errorf("403 Forbidden (%s) — periksa scope, akses resource, dan endpoint resmi; jangan pindah akun untuk melewati penolakan%s", path, message)

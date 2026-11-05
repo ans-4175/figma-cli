@@ -66,8 +66,9 @@ modify the source while merely inspecting it.
 - **unknown / missing Role:** do not assume editor. Resolve permission with
   the user or server evidence. A REST role belongs to the PAT identity; only
   use MCP `whoami` when needed to verify a potentially different OAuth user.
-- **401:** missing/expired/revoked credentials; MCP refresh may recover once.
-  Persistent failure needs an admin, not autonomous login/reset.
+- **401:** rejected credentials OR endpoint scope; retain the server message.
+  Status alone does not prove expiry. MCP refresh may recover once; persistent
+  failure needs an admin, not autonomous login/reset.
 - **403:** capture the endpoint/operation and permission evidence; possible
   causes include file access, scopes, seat/plan, policy or client eligibility.
   Do not declare the exact cause without evidence or retry around the denial.
@@ -118,8 +119,8 @@ The CLI also supports `accounts add/list/use/remove`, `FIGMA_TOKEN`, and
 secret in argv or shell history.
 
 PAT expiration/revocation requires user rotation; PATs do not use MCP refresh
-tokens. REST 401 means re-check the credential, 403 means check scopes and
-file access, and 429 means respect Retry-After. Do not bypass limits with
+tokens. REST 401/403 mean inspect the server message, endpoint scopes and resource
+access before declaring expiry; 429 means respect Retry-After. Do not bypass limits with
 another account or endpoint. REST exceptions such as variable/comment writes
 do not constitute a canvas node-write API; the current REST CLI commands
 listed above are reads.
