@@ -98,10 +98,10 @@ role diagnosis or an instruction makes arbitrary executable tool code safe.
 
 ```bash
 # One command, without changing the configured token source:
-figma-cli understand --token-file "$HOME/.config/goers/figma-token" '<Figma URL>'
+figma-cli understand --token-file "$HOME/.config/figma-cli/token" '<Figma URL>'
 
 # Optional persistent configuration (stores the path, not another token copy):
-figma-cli config set token-file "$HOME/.config/goers/figma-token"
+figma-cli config set token-file "$HOME/.config/figma-cli/token"
 figma-cli config get
 figma-cli understand '<Figma URL>'
 ```
@@ -177,6 +177,15 @@ identities or request broader rights without verifying the current docs.
 
 ### Step 4: Additional context (optional, looser tier)
 - `comments <url>` — designer intent, feedback, decisions.
+  - `comments` returns the file's comments; a node in the URL or `--n` does
+    NOT filter them. For comment-driven work use `comments --json '<url>'`
+    and filter `client_meta.node_id` against the selected root and its
+    descendant IDs from a fetched node tree.
+  - Map each anchor to a frame/text layer. Keep out-of-scope or unresolved
+    anchors separate; do not assume they apply to the selected screen.
+  - For copy review, compare comment text with the current layer text, list
+    the strings that actually differ, and confirm language/variant scope
+    before editing a screen that contains only one language.
 - `versions <url>` — history & direction of iteration.
 - `dev-resources <url>` — related code/docs/Storybook links.
 
@@ -220,6 +229,28 @@ without permission. Work in a named draft/sandbox page; never publish libraries,
 replace source screens, or write repo mappings without separate approval.
 An approved plan covering specific edits does not require another confirmation
 for every individual API call; stop when scope or assumptions materially change.
+
+### Plugin API editing pitfalls
+
+- Before the first mutating `use_figma` call, load Figma's official
+  `figma-use` skill and, for any visible design change (screens, forms,
+  sections), `figma-generate-design`, from `figma/mcp-server-guide`
+  (`skills/figma-use/SKILL.md`, its `references/plugin-api-standalone.index.md`,
+  `skills/figma-generate-design/SKILL.md`). If they are not installed or
+  exposed as MCP resources, fetch them from that repository; do not skip them.
+  Pass the names in `skillNames` when the tool schema has it, prefixing
+  `resource:` only for skills loaded as MCP resources.
+- After `source.clone()`, verify the clone's parent: it may land on the page
+  even when the source is inside a Section. Reparent into the approved
+  Section, set Section-local coordinates, grow the Section if needed, then
+  read back parent and bounds.
+- Build inside a wrapper fetched by ID in each call; do not create sections
+  as top-level page children and reparent them in a later call.
+- To add a form field, create a NEW instance from the matching main and set
+  its exposed properties. Do not relabel an existing field: the original
+  input silently disappears from the duplicate. Insert it at the intended
+  sibling index, keep helper copy with its field, and read back field order
+  and properties.
 
 ### Workflow 4 — User screenshot → native reconstruction
 
@@ -331,6 +362,8 @@ Apply this loop after EVERY screen construction or material refinement:
    mutation response are not visual evidence. Use user-supplied images first;
    rendering/export requires the applicable host policy and quota permission.
    Never bypass a screenshot restriction by exporting through another tool.
+   If every permitted visual path is unavailable or prohibited, stop at
+   `STRUCTURE_ONLY` and ask for human visual QA instead of claiming a pass.
 3. **Critique before fixing:** name concrete issues in margin/alignment/grid,
    hierarchy/type, density/whitespace, component consistency, long-content
    handling, clipping/overflow, and overall visual appeal. Compare against the
@@ -362,8 +395,8 @@ namespace with setSharedPluginData for provenance/checkpoints, not code replay.
 
 ## Setup B / Workflow 3 — Remote MCP OAuth
 
-This flow requires the patched source build; the old released v1.0.0 binary
-has no explicit `mcp login` command and must not be described as patched.
+This flow requires v1.1.0 or later (or an equivalent source build); the
+v1.0.0 binary has no explicit `mcp login` command.
 
 ### Eligibility and explicit login
 
@@ -452,7 +485,9 @@ If DCR is rejected, no browser URL/callback phase is reached.
 ### Discover before using tools
 
 Inspect `mcp tools --json` for exact names and inputSchema. Never assume
-tool names or schemas. Then call only a tool the server actually exposes:
+tool names or schemas. If the server exposes `create_session`, follow its
+description (once per task, reuse the returned `sessionId`). Then call only
+a tool the server actually exposes:
 
 ```bash
 figma-cli mcp call --account default --tool '<actual-tool-name>' \
@@ -471,6 +506,7 @@ Read tools have seat/plan quotas. Some tools are quota-exempt; consult
 current official limits, and never infer authorization from quota exemption.
 
 Official references (REST endpoints/scopes rechecked 2026-11-05):
+- https://github.com/figma/mcp-server-guide (`figma-use`, `figma-generate-design`; checked at 19be8d51)
 - https://developers.figma.com/docs/rest-api/folders-endpoints/
 - Endpoint/scope audit: `docs/rest-api-endpoints.md` in the source repository.
 - https://developers.figma.com/docs/rest-api/scopes/

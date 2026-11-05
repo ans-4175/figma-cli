@@ -49,8 +49,8 @@ REST reads do not imply permission or API support to create canvas nodes.
 
 ### OAuth → remote MCP (separate credentials)
 
-**These commands describe the patched source build, not the older v1.0.0
-binary.** After upgrading, stop the old daemon when no command is active.
+**Requires v1.1.0 or later; v1.0.0 has no `mcp login`.** After upgrading,
+stop the old daemon when no command is active.
 
 ```bash
 figma-cli daemon stop
