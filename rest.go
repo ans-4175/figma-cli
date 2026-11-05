@@ -16,7 +16,8 @@ import (
 	"time"
 )
 
-var apiBase = "https://api.figma.com/v1"
+// API versions are per endpoint: file reads use v1, folder reads use v2.
+var apiBase = "https://api.figma.com"
 
 // Bounded backoff for transient REST failures; overridden in tests.
 var restRetryBackoff = 750 * time.Millisecond
@@ -83,7 +84,11 @@ func figmaAPI(path, token string, query url.Values) (json.RawMessage, error) {
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		// Do not forward X-Figma-Token through an unexpected redirect.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequest("GET", u, nil)
 		if err != nil {
@@ -106,9 +111,10 @@ func figmaAPI(path, token string, query url.Values) (json.RawMessage, error) {
 		case resp.StatusCode == 401:
 			return nil, fmt.Errorf("401 Unauthorized — token invalid/expired (figma-cli doctor)")
 		case resp.StatusCode == 403:
-			return nil, fmt.Errorf("403 Forbidden — akun ini tidak punya akses ke file; coba --account lain")
+			message := restErrorMessage(body, token)
+			return nil, fmt.Errorf("403 Forbidden (%s) — periksa scope, akses resource, dan endpoint resmi; jangan pindah akun untuk melewati penolakan%s", path, message)
 		case resp.StatusCode == 404:
-			return nil, fmt.Errorf("404 Not Found — fileKey/nodeID salah atau file terhapus")
+			return nil, fmt.Errorf("404 Not Found — resource tidak ditemukan; ID salah/terhapus atau akses tidak terlihat")
 		case resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504:
 			if attempt >= 2 {
 				msg := fmt.Sprintf("Figma API %d tetap gagal setelah %d percobaan", resp.StatusCode, attempt+1)
@@ -123,6 +129,25 @@ func figmaAPI(path, token string, query url.Values) (json.RawMessage, error) {
 			return nil, fmt.Errorf("Figma API %d: %s", resp.StatusCode, truncate(string(body), 300))
 		}
 	}
+}
+
+// Retain a bounded server explanation (including missing scopes), never the PAT.
+func restErrorMessage(body []byte, token string) string {
+	var data map[string]any
+	if json.Unmarshal(body, &data) != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "err", "error"} {
+		message, _ := data[key].(string)
+		if message == "" {
+			continue
+		}
+		if token != "" {
+			message = strings.ReplaceAll(message, token, "[REDACTED]")
+		}
+		return ": " + truncate(strings.Join(strings.Fields(message), " "), 600)
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

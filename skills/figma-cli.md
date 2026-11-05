@@ -18,7 +18,9 @@ quota there is).
 | Zoom into a specific frame | `understand --depth 8 <url>` or `understand --n <id> <url>` | Flags must precede positional URLs |
 | Raw JSON structure | `node --depth 6 <url>` | For precise specs (exact gap, padding, colors) |
 | Pages + file permission | `file <url>` | `Role:` is file access, NOT a plan seat or quota |
-| File components & styles | `components <url>` | Instances in a section are scanned from the outline |
+| Published file library assets | `components <url>` | Local draft components/remote instances require a node-tree scan |
+| Folder files / subfolders | `folder files` / `folder folders <folder-url\|id>` | REST v2; `folders:read`; direct children, not recursive |
+| Team folders / folder preview | `team folders <team-url\|id>` / `folder meta <folder-url\|id>` | v2; preview needs `folder_metadata:read` |
 | Collaboration context | `comments` / `versions` / `dev-resources` | Tier 2–3, looser quotas |
 | MCP setup / capabilities | `mcp login`, then `mcp tools --json` | Foreground OAuth consent first; no PAT fallback |
 | Setup health check | `doctor` | Token, daemon, REST |
@@ -122,6 +124,24 @@ another account or endpoint. REST exceptions such as variable/comment writes
 do not constitute a canvas node-write API; the current REST CLI commands
 listed above are reads.
 
+## Folder discovery — current REST catalog API
+
+A `/files/team/<team>/folder/<folder>` URL is NOT a design fileKey.
+Use `figma-cli folder files --token-file <path> '<folder URL>'`; list child
+folders with `folder folders`, then traverse only within the requested scope.
+`team folders` lists top-level folders; `folder meta` is a lightweight preview.
+Flags, including `--json` and optional `--branch-data` (files only), precede
+the positional URL/ID. Legacy `/project/<id>` URLs resolve to the same v2 folder.
+
+Versions are PER ENDPOINT: catalog reads use `/v2/folders` and `/v2/teams`;
+file/node/library/comment/version/dev-resource/user reads still use official
+`/v1` endpoints. Never replace all v1 paths or fall back to deprecated
+`/v1/projects` on failure. Listing needs `folders:read`, preview needs
+`folder_metadata:read`; do not ask for deprecated `projects:read` or broad
+`files:read` because an obsolete endpoint rejects a correctly scoped token.
+On 403, inspect the endpoint and returned scope/access message; do not rotate
+identities or request broader rights without verifying the current docs.
+
 ## Workflow 1 — Understand a design from a URL (primary)
 
 ### Step 0: Read the URL
@@ -149,9 +169,9 @@ listed above are reads.
   components (⧉) → hidden elements.
 
 ### Step 3: Components & design system
-- `figma-cli components <url>` — components/sets/styles owned by the file.
-- Components shown in the outline (⧉ instance) may come from an external
-  team library — an empty file components endpoint ≠ no components used.
+- `figma-cli components <url>` — PUBLISHED components/sets/styles in the file library.
+- Local draft/unpublished components and remote instances require a node-tree
+  scan. An empty published-assets endpoint ≠ no components present or used.
 - Map instance → component name for reporting ("Button used 12×").
 
 ### Step 4: Additional context (optional, looser tier)
@@ -441,7 +461,9 @@ proof that native canvas editing works.
 Read tools have seat/plan quotas. Some tools are quota-exempt; consult
 current official limits, and never infer authorization from quota exemption.
 
-Official references (checked 2026-11-04):
+Official references (REST endpoints/scopes rechecked 2026-11-05):
+- https://developers.figma.com/docs/rest-api/folders-endpoints/
+- Endpoint/scope audit: `docs/rest-api-endpoints.md` in the source repository.
 - https://developers.figma.com/docs/rest-api/scopes/
 - https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/
 - https://developers.figma.com/docs/figma-mcp-server/write-to-canvas/

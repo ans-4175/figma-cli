@@ -11,7 +11,7 @@ picked per-command:
 
 ```
                          ┌─────────────────┐
-  figma-cli <cmd>  ───►  │  REST commands   │──► https://api.figma.com/v1
+  figma-cli <cmd>  ───►  │  REST commands   │──► https://api.figma.com
                          │  (rest.go,       │    (X-Figma-Token header,
                          │   commands.go)   │     synchronous HTTP GET)
                          └─────────────────┘
@@ -31,9 +31,12 @@ picked per-command:
 ```
 
 **REST path** (`understand`, `file`, `node`, `components`, `comments`,
-`versions`, `dev-resources`): stateless, one HTTP call per invocation, auth
+`versions`, `dev-resources`, `folder`, `team`): stateless GET reads, auth
 via Personal Access Token (`X-Figma-Token` header). This is the cheap, fast,
-default path — no daemon involved at all.
+default path — no daemon involved at all. Versions are explicit per endpoint:
+file/node/library reads use v1; folder catalog reads use v2. Never globally
+replace v1 with v2 or fall back to deprecated projects endpoints. The reviewed
+endpoint/scope inventory and source URLs live in `docs/rest-api-endpoints.md`.
 
 **MCP login** (`mcp login`): explicit foreground discovery → DCR → user
 consent with PKCE S256 → validated, single-use loopback callback → private
@@ -180,7 +183,8 @@ file figma-cli-windows-amd64.exe   # expect: PE32+ executable (console) x86-64, 
 |---|---|
 | `main.go` | CLI entrypoint, command dispatch, `usage()` text, `version` var |
 | `commands.go` | REST command implementations (understand/file/node/components/...) + accounts/mcp/doctor subcommands |
-| `rest.go` | Figma REST API client, URL parsing (`parseFigmaRef`), outline builder |
+| `rest.go` | Figma REST API client (origin only; explicit versioned paths), URL parsing (`parseFigmaRef`), outline builder |
+| `folders.go`, `folders_test.go` | Current v2 folder/team catalog commands, URL/ID parsing and route/error regressions |
 | `accounts.go` | Multi-account PAT storage (`~/.figma-cli/accounts.json`), token resolution |
 | `config.go` | Lightweight config (`token_file` override) |
 | `daemon.go` | Daemon protocol (client + server), session cache, idle watchdog |

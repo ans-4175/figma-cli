@@ -74,7 +74,7 @@ func cmdUnderstand(args []string) error {
 
 	if ref.NodeID == "" {
 		// overview: halaman + frame top-level
-		raw, err := figmaAPI("/files/"+ref.FileKey, token, toURLValues(map[string][]string{"depth": {"2"}}))
+		raw, err := figmaAPI("/v1/files/"+ref.FileKey, token, toURLValues(map[string][]string{"depth": {"2"}}))
 		if err != nil {
 			return err
 		}
@@ -107,11 +107,11 @@ func cmdUnderstand(args []string) error {
 				fmt.Printf("    %s %q id=%s\n", c.Type, c.Name, c.ID)
 			}
 		}
-		fmt.Println("→ panggil `figma-cli understand <url> --n <id>` untuk zoom ke frame.")
+		fmt.Println("→ panggil `figma-cli understand --n <id> <url>` untuk zoom ke frame.")
 		return nil
 	}
 
-	raw, err := figmaAPI("/files/"+ref.FileKey+"/nodes", token, toURLValues(map[string][]string{"ids": {ref.NodeID}}))
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/nodes", token, toURLValues(map[string][]string{"ids": {ref.NodeID}}))
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func cmdFile(args []string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := figmaAPI("/files/"+ref.FileKey, token, toURLValues(map[string][]string{"depth": {"1"}}))
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey, token, toURLValues(map[string][]string{"depth": {"1"}}))
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func cmdNode(args []string) error {
 	if rf.depth > 0 {
 		q["depth"] = []string{strconv.Itoa(rf.depth)}
 	}
-	raw, err := figmaAPI("/files/"+ref.FileKey+"/nodes", token, toURLValues(q))
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/nodes", token, toURLValues(q))
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,7 @@ func cmdComponents(args []string) error {
 		return err
 	}
 	if rf.jsonOut {
-		raw, err := figmaAPI("/files/"+ref.FileKey+"/components", token, nil)
+		raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/components", token, nil)
 		if err != nil {
 			return err
 		}
@@ -249,10 +249,9 @@ func cmdComponents(args []string) error {
 		return nil
 	}
 	for _, ep := range []string{"components", "component_sets", "styles"} {
-		raw, err := figmaAPI("/files/"+ref.FileKey+"/"+ep, token, nil)
+		raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/"+ep, token, nil)
 		if err != nil {
-			fmt.Printf("(%s gagal: %v)\n", ep, err)
-			continue
+			return fmt.Errorf("%s: %w", ep, err)
 		}
 		var meta struct {
 			Meta json.RawMessage `json:"meta"`
@@ -328,7 +327,7 @@ func cmdComments(args []string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := figmaAPI("/files/"+ref.FileKey+"/comments", token, nil)
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/comments", token, nil)
 	if err != nil {
 		return err
 	}
@@ -376,7 +375,7 @@ func cmdVersions(args []string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := figmaAPI("/files/"+ref.FileKey+"/versions", token, nil)
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/versions", token, nil)
 	if err != nil {
 		return err
 	}
@@ -432,7 +431,7 @@ func cmdDevResources(args []string) error {
 	if ref.NodeID != "" {
 		q["node_id"] = []string{ref.NodeID}
 	}
-	raw, err := figmaAPI("/files/"+ref.FileKey+"/dev_resources", token, toURLValues(q))
+	raw, err := figmaAPI("/v1/files/"+ref.FileKey+"/dev_resources", token, toURLValues(q))
 	if err != nil {
 		return err
 	}
@@ -720,7 +719,7 @@ func cmdDoctor() error {
 	}
 	// cek API kalau ada token
 	if tok, _, err := resolveToken("", ""); err == nil {
-		if _, err := figmaAPI("/me", tok, nil); err != nil {
+		if _, err := figmaAPI("/v1/me", tok, nil); err != nil {
 			fmt.Printf("REST API      : GAGAL — %v\n", err)
 		} else {
 			fmt.Println("REST API      : OK")

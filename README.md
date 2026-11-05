@@ -103,6 +103,24 @@ GOOS=windows GOARCH=amd64 go build -o figma-cli-windows-amd64.exe .
 
 Tokens and runtime state live in `~/.figma-cli/` (the user's profile on Windows), resolved with `os.UserHomeDir()`. REST PAT precedence: `--token` > `--token-file` > configured `token_file` > named/default PAT account > `FIGMA_TOKEN`. A configured token file wins over `--account`. Prefer referencing an existing private token file. MCP OAuth is independent, stored at `mcp-auth/<alias>.json`, with private temporary-file replacement and rotation locks. `mcp reset --account default` removes local credentials only; remote revocation is done in Figma account settings.
 
+## Folder discovery (current API)
+
+```bash
+figma-cli folder files --token-file "$HOME/.config/figma-cli/token" \
+  'https://www.figma.com/files/team/<teamId>/folder/<folderId>'
+figma-cli folder folders --json <folderId>
+figma-cli team folders <teamId>
+figma-cli folder meta <folderId>
+```
+
+Listing uses `folders:read`; lightweight metadata uses `folder_metadata:read`.
+Lists contain direct children visible to the token owner, not recursive results.
+Legacy project URLs are accepted as input, but requests use the current v2 folder
+endpoints. Existing file/node/library reads still use their official v1 endpoints.
+API versions are per endpoint, not one global switch. Missing scopes/access return
+403 with the server explanation; no automatic legacy or alternate-account fallback.
+See [the endpoint/scope audit](docs/rest-api-endpoints.md).
+
 ## Commands
 
 Run `figma-cli help` for the full menu. Short version: it understands files, dumps nodes, lists components/styles, reads comments, walks version history, surfaces dev resources, and drives the Figma MCP server — all so your coding agent stops guessing what "that blue-ish button, you know the one" looks like.

@@ -30,6 +30,8 @@ func main() {
 		err = cmdUnderstand(os.Args[2:])
 	case "file":
 		err = cmdFile(os.Args[2:])
+	case "folder", "team":
+		err = cmdCatalog(os.Args[1], os.Args[2:])
 	case "node":
 		err = cmdNode(os.Args[2:])
 	case "components":
@@ -70,6 +72,10 @@ Usage:
   figma-cli understand <url> [nodeID]   ⭐ Outline node (layout, warna, teks)
         [--depth N] [--json]
   figma-cli file <url>                  Metadata file + halaman
+  figma-cli folder files <folder-url|id>  Daftar file langsung di folder (v2)
+  figma-cli folder folders <folder-url|id> Daftar subfolder langsung (v2)
+  figma-cli folder meta <folder-url|id>   Metadata folder ringan (v2)
+  figma-cli team folders <team-url|id>    Daftar folder top-level tim (v2)
   figma-cli node <url> [nodeID]         Dump JSON mentah node [--depth N]
   figma-cli components <url>            Components, sets, styles [--json]
   figma-cli comments <url>              Daftar komentar
