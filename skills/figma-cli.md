@@ -276,6 +276,14 @@ An inventory of converted frames is NOT a mature design system.
 - Use Auto Layout and intentional hug/fill/fixed sizing; check long labels,
   hidden optional content and the agreed widths. Do not claim behavior that
   has not been exercised.
+- Axis guard: horizontal = primary width/counter height; vertical = primary
+  height/counter width. For a fixed-width/hug-height horizontal row use
+  primary FIXED + counter AUTO (or horizontal FIXED + vertical HUG).
+- Verify one populated row before scaling a gallery. After resize/reparent,
+  re-read effective sizing: no 0/1px content rows, overflow or unintended overlap.
+  A row must contain its visible flow children; dividers/overlays need explicit exceptions.
+- Check wrapped text and label/value bounds, not just node existence. Empty
+  matches or zero-child checks fail verification; repeat after every refinement.
 - Reuse approved semantic variables/styles; create missing bindings only inside
   the approved scope. Do not blindly bind every hex value to a new variable.
   Artwork, logos, photos and vector illustrations are explicit exceptions to
