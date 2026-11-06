@@ -55,7 +55,10 @@ No deprecated projects endpoint or automatic legacy fallback is implemented.
   `--allow-duplicate`, and POSTs exactly once: no automatic retry, because a
   timeout/5xx may already have saved the reply. It never creates top-level
   comments, deletes, reacts or "resolves" (the REST API has no resolve).
-  Retrieved 2026-11-05: comments-endpoints and scopes pages.
+  Retrieved 2026-11-05: comments-endpoints and scopes pages. Live check
+  2026-11-06: one approved reply to a real root thread returned 200 with
+  `{id, parent_id, created_at}`; an identical follow-up was refused locally
+  before any POST.
 
 ## Evidence and official references
 

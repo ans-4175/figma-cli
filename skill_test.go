@@ -20,7 +20,7 @@ func TestEmbeddedSkillReleaseGuidance(t *testing.T) {
 	for _, required := range []string{
 		"comments --json '<url>'",
 		"client_meta.node_id",
-		"does\n    NOT filter them",
+		"does NOT filter them",
 		"figma/mcp-server-guide",
 		"plugin-api-standalone.index.md",
 		"figma-generate-design",
@@ -32,6 +32,10 @@ func TestEmbeddedSkillReleaseGuidance(t *testing.T) {
 		"comments reply --comment-id",
 		"file_comments:write",
 		"never retries",
+		"Edit where the comment lives",
+		"A pin is approximate",
+		"ONLY when the requester asks (opt-in)",
+		"the API has no resolve",
 	} {
 		if !strings.Contains(skillMD, required) {
 			t.Errorf("embedded skill missing %q", required)
