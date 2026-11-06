@@ -316,6 +316,9 @@ func prettyMeta(ep string, meta json.RawMessage) string {
 // ---- figma-cli comments ----
 
 func cmdComments(args []string) error {
+	if len(args) > 0 && args[0] == "reply" {
+		return cmdCommentReply(args[1:])
+	}
 	fs := flag.NewFlagSet("comments", flag.ExitOnError)
 	rf := newRestFlags(fs)
 	fs.Parse(args)

@@ -29,6 +29,9 @@ func TestEmbeddedSkillReleaseGuidance(t *testing.T) {
 		"create a NEW instance from the matching main",
 		"stop at\n   `STRUCTURE_ONLY`",
 		"v1.1.0 or later",
+		"comments reply --comment-id",
+		"file_comments:write",
+		"never retries",
 	} {
 		if !strings.Contains(skillMD, required) {
 			t.Errorf("embedded skill missing %q", required)

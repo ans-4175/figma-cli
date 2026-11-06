@@ -19,6 +19,7 @@ Versions apply **per endpoint**, not to the entire API. The client origin is
 | `folder folders` | `/v2/folders/:folder_id/folders` | `folders:read` |
 | `folder meta` | `/v2/folders/:folder_id/meta` | `folder_metadata:read` |
 | `team folders` | `/v2/teams/:team_id/folders` | `folders:read` |
+| `comments reply` (only mutation) | `POST /v1/files/:file_key/comments` with `{message, comment_id}` | `file_comments:write` (+ `file_comments:read` for preflight) |
 
 The existing v1 command endpoints remain documented and are **not deprecated**.
 Folder discovery was missing from the CLI; it now uses current v2 endpoints.
@@ -47,7 +48,14 @@ No deprecated projects endpoint or automatic legacy fallback is implemented.
 - GET retries remain bounded; 401/403/404 do not retry. Redirects are refused
   rather than forwarding a PAT to an unexpected destination.
 - MCP transport/OAuth discovery, canvas writes and publication are separate
-  from REST API versioning. This patch does not add REST mutation commands.
+  from REST API versioning.
+- `comments reply` is the ONLY REST mutation. It replies to an existing ROOT
+  comment (the API rejects replies to replies), reads the message from a file,
+  preflights the thread with GET, refuses identical duplicate replies unless
+  `--allow-duplicate`, and POSTs exactly once: no automatic retry, because a
+  timeout/5xx may already have saved the reply. It never creates top-level
+  comments, deletes, reacts or "resolves" (the REST API has no resolve).
+  Retrieved 2026-11-05: comments-endpoints and scopes pages.
 
 ## Evidence and official references
 

@@ -78,7 +78,10 @@ Usage:
   figma-cli team folders <team-url|id>    Daftar folder top-level tim (v2)
   figma-cli node <url> [nodeID]         Dump JSON mentah node [--depth N]
   figma-cli components <url>            Components, sets, styles [--json]
-  figma-cli comments <url>              Daftar komentar
+  figma-cli comments <url>              Daftar komentar (seluruh file)
+  figma-cli comments reply --comment-id ID --message-file PATH <url>
+                                        Balas thread komentar ROOT (POST,
+                                        scope file_comments:write) [--dry-run]
   figma-cli versions <url>              Riwayat versi
   figma-cli dev-resources <url>         Link dev (code, docs, Storybook)
   figma-cli accounts add|list|use|remove   Multi-akun PAT

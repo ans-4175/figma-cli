@@ -22,6 +22,7 @@ quota there is).
 | Folder files / subfolders | `folder files` / `folder folders <folder-url\|id>` | REST v2; `folders:read`; direct children, not recursive |
 | Team folders / folder preview | `team folders <team-url\|id>` / `folder meta <folder-url\|id>` | v2; preview needs `folder_metadata:read` |
 | Collaboration context | `comments` / `versions` / `dev-resources` | Tier 2–3, looser quotas |
+| Reply to a comment thread | `comments reply --comment-id ID --message-file F <url>` | Only REST write; `file_comments:write`; approval first |
 | MCP setup / capabilities | `mcp login`, then `mcp tools --json` | Foreground OAuth consent first; no PAT fallback |
 | Setup health check | `doctor` | Token, daemon, REST |
 
@@ -122,8 +123,8 @@ PAT expiration/revocation requires user rotation; PATs do not use MCP refresh
 tokens. REST 401/403 mean inspect the server message, endpoint scopes and resource
 access before declaring expiry; 429 means respect Retry-After. Do not bypass limits with
 another account or endpoint. REST exceptions such as variable/comment writes
-do not constitute a canvas node-write API; the current REST CLI commands
-listed above are reads.
+do not constitute a canvas node-write API. All REST CLI commands are reads
+except `comments reply`, which posts one reply to an existing thread.
 
 ## Folder discovery — current REST catalog API
 
@@ -186,6 +187,14 @@ identities or request broader rights without verifying the current docs.
   - For copy review, compare comment text with the current layer text, list
     the strings that actually differ, and confirm language/variant scope
     before editing a screen that contains only one language.
+  - Reply to a thread ONLY after the requested change is applied and read
+    back, and only with approval to post: write the text to a file, run
+    `comments reply --comment-id <root-id> --message-file <path> --dry-run
+    '<url>'`, then the same command without `--dry-run`. Needs
+    `file_comments:write`. Replies go to ROOT comments only (for a reply, use
+    its `parent_id`). Say what actually changed; never claim more. The
+    command POSTs once and never retries: on a timeout or 5xx, re-read the
+    thread before trying again. It cannot resolve, delete or start threads.
 - `versions <url>` — history & direction of iteration.
 - `dev-resources <url>` — related code/docs/Storybook links.
 
