@@ -1,126 +1,209 @@
 # figma-cli
 
-Your coding agent can't see Figma. It has no eyes. It just squints at the URL you pasted and hallucinates a design system.
+**Your coding agent can't see Figma.** You paste a link, it nods politely, then invents a "blue-ish button" that exists in no design file anywhere.
 
-`figma-cli` fixes that — it hands your terminal (and whatever LLM lives in it) actual X-ray vision into Figma files: layer trees, colors, auto-layout, components, comments, version history, dev resources, even the remote MCP tools (`get_code`, `get_image`, etc.) — all from the command line, no browser tab required.
+`figma-cli` gives it glasses. One small program, run from the terminal, that lets your AI agent (Claude Code, Codex, Cursor, Hermes, whatever lives in your terminal) actually *read* a Figma file: the layers, the colors, the spacing, the text, the components, the comments, the version history. No browser tab, no screenshots pasted into chat, no guessing.
 
-Talks to two APIs so it can be greedy about context:
-- **REST API** (`api.figma.com`) — fast, structured, your PAT does the talking.
-- **Remote MCP** (`mcp.figma.com`) — explicit foreground OAuth login + PKCE S256; a lightweight daemon reuses and refreshes persisted tokens. Figma must also permit this client.
+> Designer: "It's in Figma."
+> Agent, before: "Sure! Here's a purple gradient you didn't ask for."
+> Agent, after: "Card, 16px padding, 8px gap, `#1F6FEB`, Inter 14/20. Building it now."
 
-Runs natively everywhere a terminal does: **macOS (Intel & Apple Silicon), Linux (amd64 & arm64), Windows (amd64 & arm64)**. Single static binary, zero external dependencies — just Go's standard library doing all the heavy lifting.
+---
+
+## What can I use it for?
+
+- **Design → code without the telephone game.** Paste a Figma frame link, ask your agent to build it. It reads the real layout, spacing and colors instead of eyeballing a screenshot.
+- **"Explain this file to me."** Inherited a 40-page Figma file nobody documented? Ask the agent for a tour: pages, main screens, components, styles.
+- **Design system audits.** "Which components and styles does this library have? Which screens break the rules?"
+- **Handle designer comments.** Read every comment on a file, turn them into a to-do list, and (with your OK) reply to a thread once it's fixed.
+- **"What changed?"** Walk the version history before a release or a review.
+- **Find the right file.** List the files and folders in a team or project when all you have is "it's somewhere in the Marketing folder".
+- **Dev handoff links.** Pull the Storybook / docs / code links attached to a design.
+- **Edit the canvas (advanced, optional).** With the MCP setup below, an agent can use Figma's own remote tools — and, where your plan and permissions allow, create or change things on the canvas. Always with your approval.
+
+---
 
 ## Install
 
-Grab the binary for your OS from [Releases](../../releases). No installer, no package manager drama, no "please restart your computer."
+Download the file for your computer from [Releases](../../releases). No installer, no package manager, no "please restart".
+
+| You have | Download |
+|---|---|
+| Mac (M1/M2/M3/M4) | `figma-cli-darwin-arm64` |
+| Mac (Intel) | `figma-cli-darwin-amd64` |
+| Linux | `figma-cli-linux-amd64` (or `-arm64`) |
+| Windows | `figma-cli-windows-amd64.exe` (or `-arm64`) |
+
+**Mac / Linux** — make it runnable and put it on your PATH:
 
 ```bash
-# macOS / Linux
 chmod +x figma-cli-<os>-<arch>
 sudo mv figma-cli-<os>-<arch> /usr/local/bin/figma-cli
+figma-cli help   # if this prints a menu, you're in
 ```
 
-```powershell
-# Windows — drop figma-cli-windows-<arch>.exe somewhere in PATH,
-# or just rename it to figma-cli.exe and call it a day.
-```
+**Windows** — rename it to `figma-cli.exe` and drop it in a folder on your PATH.
 
-## Quick start
+---
 
-### PAT → REST (default, no browser)
+## Setup: two keys, two doors
 
-Have the user create a least-privilege Figma PAT and save it in a private file.
-Do not paste secrets into argv, chat, logs, or source control.
+figma-cli talks to Figma in two ways. They use **different keys**, and one does not open the other's door.
+
+| | 🔑 Personal Access Token (PAT) | 🎟️ MCP login |
+|---|---|---|
+| What it unlocks | Reading files: layers, colors, comments, versions, folders | Figma's own remote tools (code hints, images, canvas edits where allowed) |
+| Do I need it? | **Yes — start here** | Optional, for power users |
+| Feels like | Copy a key into a file, done | Log in through your browser, like any "Sign in with…" |
+
+### 🔑 Setup 1 — Personal Access Token (5 minutes)
+
+1. **Make the token.** In Figma: avatar → **Settings** → **Security** → **Personal access tokens** → *Generate new token*.
+   Give it only what it needs. For most people, read-only is plenty:
+   - `file_content:read` (required — this is the "see the design" one)
+   - `file_comments:read`, `file_versions:read`, `file_dev_resources:read`, `library_content:read` (nice to have)
+   - `folders:read` (if you want to browse team folders)
+   - `file_comments:write` only if you want the agent to reply to comments
+
+   Figma shows the token **once**. Copy it.
+
+2. **Put it in a private file.** Not in chat, not in a Slack DM to yourself, not in the repo. Just a file only you can read.
+
+   Mac / Linux (paste when asked; nothing will show while you type, that's normal):
+
+   ```bash
+   mkdir -p ~/.config/figma-cli && chmod 700 ~/.config/figma-cli
+   printf 'Paste your Figma token, then Enter: '; read -rs T; echo
+   printf '%s\n' "$T" > ~/.config/figma-cli/token; unset T
+   chmod 600 ~/.config/figma-cli/token
+   ```
+
+   Windows: create `%USERPROFILE%\.config\figma-cli\token` in Notepad, paste the token, save. Make sure only your user account can open that file.
+
+3. **Tell figma-cli where it is** (once, it remembers):
+
+   ```bash
+   figma-cli config set token-file ~/.config/figma-cli/token
+   figma-cli doctor
+   ```
+
+   `doctor` checks your setup and pings Figma. Green-ish output = you're good.
+
+> 🧯 Token leaked or expired? Delete it in Figma settings, make a new one, overwrite the file. Tokens don't renew themselves.
+
+### 🎟️ Setup 2 — MCP login (optional)
+
+This connects figma-cli to Figma's remote MCP server so your agent can use Figma's own tools. You log in with your normal Figma account in the browser — no token copying.
 
 ```bash
-# Flags must precede positional URLs.
-figma-cli understand --token-file "$HOME/.config/figma-cli/token" \
-  'https://www.figma.com/design/<fileKey>/Name?node-id=1-2'
-
-# Optional: persist the path for subsequent REST commands.
-figma-cli config set token-file "$HOME/.config/figma-cli/token"
-figma-cli --skills
+figma-cli daemon stop               # only if you upgraded from an older version
+figma-cli mcp login                 # opens your browser — log in and click Allow
+figma-cli mcp status                # should say you're logged in
+figma-cli mcp tools                 # lists what Figma lets you use
 ```
 
-The file can contain raw token text or `FIGMA_TOKEN=...`. On Unix, use mode
-0600 in a private directory; on Windows, restrict the ACL to the intended user.
-Scopes and file access still apply. PAT expiration requires user rotation.
-REST reads do not imply permission or API support to create canvas nodes.
+A few honest footnotes:
 
-### OAuth → remote MCP (separate credentials)
+- **You do the login, not your agent.** It's your account and your consent. Run `mcp login` yourself (in Claude Code you can type `! figma-cli mcp login`).
+- **Figma decides who gets in.** Figma only allows approved apps to use its MCP server. figma-cli registers as `Claude Code` (it tells you so during login). Figma can change that list anytime; if login gets refused, that's Figma's call, not a broken install.
+- **Editing the canvas needs more than a login:** edit access to the file and a Figma plan/seat that allows it.
+- After that, it stays logged in and refreshes itself. To log out locally: `figma-cli mcp reset`. To fully revoke, remove the app in your Figma account settings.
+- Need MCP on a remote server (e.g. a Hermes host)? See `figma-cli --skills` — the login must happen as the server's own user, not on your laptop.
 
-**Requires v1.1.0 or later; v1.0.0 has no `mcp login`.** After upgrading,
-stop the old daemon when no command is active.
+---
+
+## 🤖 Let your agent set it up
+
+Already installed the binary? Paste one of these into your agent and let it hold your hand.
+
+**Setup PAT (most people):**
+
+```text
+Help me set up figma-cli for reading Figma files.
+First run `figma-cli --skills` and follow its "Setup A — PAT" section.
+Rules: never ask me to paste the token into chat, never print it, never put it
+in a command argument. Guide me to create a least-privilege PAT and save it to
+a private file at ~/.config/figma-cli/token (mode 600), then run
+`figma-cli config set token-file` and `figma-cli doctor` and tell me the result.
+```
+
+**Setup MCP login:**
+
+```text
+Help me connect figma-cli to Figma's remote MCP server.
+Read `figma-cli --skills`, section "Setup B — Remote MCP OAuth".
+Do NOT run `mcp login` or `mcp reset` yourself — tell me the exact command and
+I'll run it and approve in my browser. Afterwards, run `figma-cli mcp status`
+and `figma-cli mcp tools --json` and summarize which tools I actually have.
+Don't promise canvas edits unless a write tool shows up in that list.
+```
+
+**Teach your agent to use it (put this in CLAUDE.md / AGENTS.md):**
+
+```text
+For any Figma link, use figma-cli. Run `figma-cli --skills` once to learn it.
+Start every Figma task with `figma-cli understand '<url>'`. Read with REST,
+edit the canvas only via MCP and only after I approve each change.
+```
+
+---
+
+## 🚀 First try
+
+Open any Figma frame, right-click it → **Copy link to selection**. Then:
 
 ```bash
-figma-cli daemon stop
-figma-cli mcp login --account default
-# The user logs in and explicitly consents in their browser.
-figma-cli mcp status --account default
-figma-cli mcp tools --account default --json
+figma-cli understand 'https://www.figma.com/design/<fileKey>/Name?node-id=1-2'
 ```
 
-A PAT does not log MCP in, and MCP OAuth does not provide REST credentials.
-Login performs discovery, DCR, PKCE S256, and a state-validated, single-use
-loopback callback. Saved access/refresh tokens are reused across process
-restarts and refreshed automatically; failures are surfaced instead of silently
-opening a browser or deleting credentials. Login/refresh/reset use a
-cross-process lock. Never remove a stale lock without checking its owner.
+You'll get a readable outline of that frame: what's inside, how it's laid out, colors, fonts, text. That's exactly what your agent sees.
 
-Figma allowlists remote-MCP registrations by exact client name. Like Hermes
-Agent's documented default, login registers under `Claude Code` and says so
-in its output; your own login and consent are still required, and no other
-client's credentials are used. The allowlist can change anytime — the Figma
-MCP catalog remains the official path. Discover actual tools/schemas before
-claiming canvas edits; write tools additionally need file permission, seat,
-and plan.
+Then hand it over:
 
-For a headless Hermes host, login must run under the agent's own user/HOME
-with persistent private storage. A browser on a different machine needs a
-private SSH forward for the printed loopback callback port; never expose the
-callback publicly. Laptop login is not server login. Setup, troubleshooting,
-revocation, and tool-use guardrails are included in `figma-cli --skills`.
-Deploying to Hermes remains a separate approval.
-
-`figma-cli doctor` checks both setup and REST connectivity; it is not proof
-that MCP OAuth or canvas writes work.
-
-## Build from source
-
-Needs Go ≥ 1.23. No `go mod download` required — this thing has zero dependencies, which is either impressive minimalism or mild masochism, depending on who you ask.
-
-```bash
-go build -o figma-cli .
+```text
+Here's a Figma frame: <paste link>
+Use figma-cli to understand it, then build it as a React component
+with the exact spacing, colors and typography. Tell me anything ambiguous.
 ```
 
-Cross-compiling is stupidly easy because Go just... does that:
+Other things worth trying on day one:
 
-```bash
-GOOS=windows GOARCH=amd64 go build -o figma-cli-windows-amd64.exe .
+```text
+Give me a tour of this Figma file: pages, main screens, and the components it uses. <link>
+```
+```text
+List all open comments on this file and turn them into a checklist. <link>
+```
+```text
+What changed in this file over the last few versions? <link>
 ```
 
-## Credentials & config
+---
 
-Tokens and runtime state live in `~/.figma-cli/` (the user's profile on Windows), resolved with `os.UserHomeDir()`. REST PAT precedence: `--token` > `--token-file` > configured `token_file` > named/default PAT account > `FIGMA_TOKEN`. A configured token file wins over `--account`. Prefer referencing an existing private token file. MCP OAuth is independent, stored at `mcp-auth/<alias>.json`, with private temporary-file replacement and rotation locks. `mcp reset --account default` removes local credentials only; remote revocation is done in Figma account settings.
+## When things go sideways
 
-## Folder discovery (current API)
+| You see | Probably means |
+|---|---|
+| `403` | Your token can't open that file, or is missing a scope. Check you have access and the scope list above. |
+| `401` | Token rejected — wrong, revoked, or missing the scope for that action. Read the message; it's not always "expired". |
+| `404` | Wrong link, deleted node, or a file your account can't see. |
+| `429` | Figma says slow down. Wait a bit; don't swap accounts to dodge it. |
+| MCP login refused | Figma's MCP allowlist said no. Nothing to fix locally. |
 
-```bash
-figma-cli folder files --token-file "$HOME/.config/figma-cli/token" \
-  'https://www.figma.com/files/team/<teamId>/folder/<folderId>'
-figma-cli folder folders --json <folderId>
-figma-cli team folders <teamId>
-figma-cli folder meta <folderId>
-```
+Still stuck? `figma-cli doctor` first, then `figma-cli <command> -h`.
 
-Listing uses `folders:read`; lightweight metadata uses `folder_metadata:read`.
-Lists contain direct children visible to the token owner, not recursive results.
-Legacy project URLs are accepted as input, but requests use the current v2 folder
-endpoints. Existing file/node/library reads still use their official v1 endpoints.
-API versions are per endpoint, not one global switch. Missing scopes/access return
-403 with the server explanation; no automatic legacy or alternate-account fallback.
-See [the endpoint/scope audit](docs/rest-api-endpoints.md).
+---
 
-## Commands
+## For the curious (and the contributors)
 
-Run `figma-cli help` for the full menu. Short version: it understands files, dumps nodes, lists components/styles, reads comments, walks version history, surfaces dev resources, and drives the Figma MCP server — all so your coding agent stops guessing what "that blue-ish button, you know the one" looks like.
+- Full command list: `figma-cli help`
+- The agent playbook (setup, workflows, guardrails): `figma-cli --skills`
+- How it's built, releases, credential storage: [AGENTS.md](AGENTS.md)
+- Which Figma API endpoints and scopes it uses: [docs/rest-api-endpoints.md](docs/rest-api-endpoints.md)
+- Build it yourself (Go ≥ 1.23, zero dependencies — minimalism or masochism, you decide):
+
+  ```bash
+  go build -o figma-cli .
+  ```
+
+Runs on macOS, Linux and Windows, Intel and ARM. One file, nothing else to install.
