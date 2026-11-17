@@ -90,7 +90,7 @@ Usage:
                                         (token mentah atau FIGMA_TOKEN=…)
   figma-cli mcp login [--account A]    OAuth MCP di foreground (consent user)
   figma-cli mcp tools [--json]          Daftar tool + schema (login dahulu)
-  figma-cli mcp call --tool T [--args '{…}'] [url] [nodeID]
+  figma-cli mcp call --tool T [--args '{…}' | --args-file f.json] [url] [nodeID]
                                         Panggil tool MCP (hasil gambar → PNG)
   figma-cli mcp status|reset [--account A] Cek / hapus OAuth lokal per-alias
   figma-cli daemon status|stop          Kontrol daemon manual

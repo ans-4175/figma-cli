@@ -523,6 +523,10 @@ figma-cli mcp call --account default --tool '<actual-tool-name>' \
   --args '<JSON matching inputSchema>' '<Figma URL>'
 ```
 
+For long payloads (plugin code with quotes or newlines, e.g. `use_figma`), write the
+JSON object to a file and pass `--args-file args.json` instead of `--args`. Never
+wrap the call in `python3 -c` or shell substitution just to quote the payload.
+
 fileKey/nodeId can be filled from the URL when omitted from the JSON.
 Prefer REST for ordinary reads. If the user approves a canvas-write test,
 use the actual write tool (official docs currently describe `use_figma`),

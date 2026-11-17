@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -602,10 +603,21 @@ func cmdMCP(args []string) error {
 	case "call":
 		fs.StringVar(&tool, "tool", "", "nama tool MCP (mis. get_code)")
 		fs.StringVar(&argsJSON, "args", "{}", "arguments JSON")
+		argsFile := fs.String("args-file", "", "file berisi arguments JSON (pengganti --args untuk payload panjang, mis. kode use_figma)")
 		fs.IntVar(&timeoutSec, "timeout", 180, "timeout detik")
 		fs.Parse(rest)
 		if tool == "" {
-			return fmt.Errorf("usage: figma-cli mcp call --tool get_code --args '{…}' [url|fileKey] [nodeID]")
+			return fmt.Errorf("usage: figma-cli mcp call --tool get_code (--args '{…}' | --args-file args.json) [url|fileKey] [nodeID]")
+		}
+		if *argsFile != "" {
+			if argsJSON != "" && argsJSON != "{}" {
+				return errors.New("pakai salah satu: --args atau --args-file")
+			}
+			data, err := readArgsFile(*argsFile)
+			if err != nil {
+				return err
+			}
+			argsJSON = data
 		}
 		// posisi argumen: url/fileKey + nodeID → dipetakan ke args standar MCP Figma
 		margs := map[string]any{}
